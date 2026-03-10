@@ -3,7 +3,7 @@
 """
 Bot de Videos para Facebook - Verdad Hoy
 Publica videos de noticias cada 1 hora
-Fuentes: Dailymotion, Vimeo, Reddit, Twitter/X (si disponible), y URLs directas
+Fuentes: Dailymotion, Vimeo, Reddit (corregido), RSS de video
 """
 
 import requests
@@ -14,8 +14,8 @@ import json
 import os
 import random
 import subprocess
+import time
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urljoin
 import yt_dlp
 
@@ -118,30 +118,36 @@ for cat in CATEGORIAS.values():
     TODAS_PALABRAS.extend(cat['palabras'])
 
 # =============================================================================
-# FUENTES DE VIDEO ESTABLES (Sin YouTube)
+# FUENTES ESTABLES (Sin YouTube, Facebook, Instagram - requieren auth)
 # =============================================================================
-
-# RSS de video que funcionan bien
-RSS_FEEDS_VIDEO = [
-    # BBC Video (funciona bien)
-    'https://feeds.bbci.co.uk/news/video_and_audio/world/rss.xml ',
-    
-    # Reuters Video
-    'https://www.reutersagency.com/feed/?best-topics=world&format=mrss ',
-    
-    # AP Video (Associated Press)
-    'https://api.ap.org/media/v/content/feed?format=mrss ',
-]
 
 # Canales de Dailymotion de noticias (más permisivo que YouTube)
 DAILYMOTION_CHANNELS = [
     'euronews', 'france24', 'rt', 'trtworld', 'cgtn', 'aljazeera', 'afp', 'reuters'
 ]
 
-# Subreddits de video de conflictos
+# Búsquedas por términos en Dailymotion
+DAILYMOTION_SEARCH_TERMS = [
+    'war', 'conflict', 'attack', 'military', 'news', 'breaking', 'crisis',
+    'gaza', 'ukraine', 'israel', 'palestine', 'syria', 'narcotraffic', 'police'
+]
+
+# Subreddits de video de conflictos (con manejo de errores mejorado)
 REDDIT_SUBREDDITS = [
     'CombatFootage', 'war', 'syriancivilwar', 'UkraineWarVideoReport', 
-    'NarcoFootage', 'ActualPublicFreakouts', 'CatastrophicFailure'
+    'NarcoFootage', 'ActualPublicFreakouts', 'CatastrophicFailure',
+    'worldnews', 'news'
+]
+
+# Canales de Vimeo de noticias/documentales
+VIMEO_CHANNELS = [
+    'aljazeera', 'reuters', 'afp', 'france24', 'euronews'
+]
+
+# RSS Feeds de video que funcionan
+RSS_FEEDS_VIDEO = [
+    'https://feeds.bbci.co.uk/news/video_and_audio/world/rss.xml',
+    'https://www.reutersagency.com/feed/?best-topics=world&format=mrss',
 ]
 
 # =============================================================================
@@ -296,112 +302,189 @@ def verificar_tiempo_ultima_publicacion(estado):
 def buscar_videos_dailymotion():
     """
     Busca videos en Dailymotion de canales de noticias
-    Dailymotion es más permisivo que YouTube para descargas
+    CORREGIDO: Manejo de errores y formato de IDs
     """
     videos = []
     
     try:
-        # API pública de Dailymotion (no requiere auth para búsqueda básica)
-        for canal in random.sample(DAILYMOTION_CHANNELS, 4):
+        # Intentar búsqueda por canales
+        canales = random.sample(DAILYMOTION_CHANNELS, min(4, len(DAILYMOTION_CHANNELS)))
+        
+        for canal in canales:
             try:
-                # Buscar videos del canal
-                search_terms = ['war', 'conflict', 'attack', 'military', 'narcotraffic', 'police']
-                termino = random.choice(search_terms)
+                # Buscar videos del canal con términos de búsqueda
+                termino = random.choice(DAILYMOTION_SEARCH_TERMS)
                 
+                # API pública de Dailymotion - CORREGIDA
                 url_api = f"https://api.dailymotion.com/videos?owners={canal}&search={termino}&limit=10&sort=recent&fields=id,title,description,url,created_time,duration"
                 
                 resp = requests.get(url_api, timeout=15)
+                resp.raise_for_status()
                 data = resp.json()
                 
                 if 'list' in data:
                     for video in data['list']:
-                        titulo = video.get('title', '')
-                        descripcion = video.get('description', '')
-                        duracion = video.get('duration', 0)
-                        
-                        # Filtrar por relevancia
-                        es_relevante = any(p in f"{titulo} {descripcion}".lower() for p in TODAS_PALABRAS)
-                        
-                        # Priorizar videos cortos (30s - 5min)
-                        if es_relevante and 30 <= duracion <= 300:
-                            categoria = detectar_categoria(titulo, descripcion)
+                        try:
+                            titulo = video.get('title', '')
+                            descripcion = video.get('description', '') or ''
+                            duracion = video.get('duration', 0)
+                            video_id = video.get('id', '')
                             
-                            videos.append({
-                                'titulo': titulo,
-                                'descripcion': descripcion[:300],
-                                'url': f"https://www.dailymotion.com/video/ {video['id']}",
-                                'fuente': f'Dailymotion/{canal}',
-                                'fecha': video.get('created_time', ''),
-                                'duracion': duracion,
-                                'puntaje': 10 if categoria in ['conflictos_guerra', 'narcotrafico'] else 7,
-                                'tipo_url': 'dailymotion',
-                                'categoria': categoria,
-                                'id_video': video['id']
-                            })
+                            if not video_id or not titulo:
+                                continue
+                            
+                            # Filtrar por relevancia
+                            texto_completo = f"{titulo} {descripcion}".lower()
+                            es_relevante = any(p in texto_completo for p in TODAS_PALABRAS)
+                            
+                            # Priorizar videos cortos (30s - 5min) y relevantes
+                            if es_relevante and 30 <= duracion <= 300:
+                                categoria = detectar_categoria(titulo, descripcion)
+                                
+                                # URL correcta de Dailymotion
+                                video_url = f"https://www.dailymotion.com/video/{video_id}"
+                                
+                                videos.append({
+                                    'titulo': titulo,
+                                    'descripcion': descripcion[:300],
+                                    'url': video_url,
+                                    'fuente': f'Dailymotion/{canal}',
+                                    'fecha': video.get('created_time', ''),
+                                    'duracion': duracion,
+                                    'puntaje': 10 if categoria in ['conflictos_guerra', 'narcotrafico'] else 7,
+                                    'tipo_url': 'dailymotion',
+                                    'categoria': categoria,
+                                    'id_video': video_id
+                                })
+                        except Exception as e:
+                            continue
                             
             except Exception as e:
-                log(f"Error Dailymotion {canal}: {str(e)[:50]}", 'advertencia')
+                log(f"Error Dailymotion canal {canal}: {str(e)[:50]}", 'advertencia')
                 continue
+        
+        # También buscar por términos generales (sin canal específico)
+        try:
+            terminos_busqueda = ['war', 'conflict', 'news', 'breaking']
+            for termino in random.sample(terminos_busqueda, 2):
+                url_api = f"https://api.dailymotion.com/videos?search={termino}&limit=10&sort=recent&fields=id,title,description,url,created_time,duration"
+                
+                resp = requests.get(url_api, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                if 'list' in data:
+                    for video in data['list']:
+                        try:
+                            titulo = video.get('title', '')
+                            descripcion = video.get('description', '') or ''
+                            duracion = video.get('duration', 0)
+                            video_id = video.get('id', '')
+                            
+                            if not video_id or not titulo:
+                                continue
+                            
+                            texto_completo = f"{titulo} {descripcion}".lower()
+                            es_relevante = any(p in texto_completo for p in TODAS_PALABRAS)
+                            
+                            if es_relevante and 30 <= duracion <= 300:
+                                categoria = detectar_categoria(titulo, descripcion)
+                                video_url = f"https://www.dailymotion.com/video/{video_id}"
+                                
+                                videos.append({
+                                    'titulo': titulo,
+                                    'descripcion': descripcion[:300],
+                                    'url': video_url,
+                                    'fuente': 'Dailymotion/search',
+                                    'fecha': video.get('created_time', ''),
+                                    'duracion': duracion,
+                                    'puntaje': 8,
+                                    'tipo_url': 'dailymotion',
+                                    'categoria': categoria,
+                                    'id_video': video_id
+                                })
+                        except:
+                            continue
+        except Exception as e:
+            log(f"Error búsqueda general Dailymotion: {str(e)[:50]}", 'advertencia')
                 
     except Exception as e:
         log(f"Error general Dailymotion: {str(e)[:50]}", 'advertencia')
     
-    log(f"Dailymotion: {len(videos)} videos", 'video')
+    log(f"Dailymotion: {len(videos)} videos encontrados", 'video')
     return videos
 
 def buscar_videos_reddit():
     """
     Busca videos en subreddits de conflictos
-    Reddit tiene mucho contenido de video de calidad
+    CORREGIDO: Headers mejorados y manejo de rate limiting
     """
     videos = []
     
     try:
-        # Reddit JSON API (pública, no requiere auth para lectura)
+        # Headers más completos para evitar bloqueos
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
+            'Accept-Language': 'en-US,en;q=0.9',
         }
         
-        for subreddit in random.sample(REDDIT_SUBREDDITS, 3):
+        subreddits = random.sample(REDDIT_SUBREDDITS, min(4, len(REDDIT_SUBREDDITS)))
+        
+        for subreddit in subreddits:
             try:
-                url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=15"
-                resp = requests.get(url, headers=headers, timeout=15)
+                # Añadir delay para evitar rate limiting
+                time.sleep(1)
+                
+                url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=10"
+                resp = requests.get(url, headers=headers, timeout=20)
+                
+                if resp.status_code == 429:
+                    log(f"Rate limit en Reddit {subreddit}, esperando...", 'advertencia')
+                    time.sleep(5)
+                    continue
+                
+                resp.raise_for_status()
                 data = resp.json()
                 
                 if 'data' in data and 'children' in data['data']:
                     for post in data['data']['children']:
-                        post_data = post['data']
-                        
-                        # Solo posts con video
-                        if not post_data.get('is_video') and 'v.redd.it' not in post_data.get('url', ''):
-                            continue
-                        
-                        titulo = post_data.get('title', '')
-                        
-                        # Verificar relevancia
-                        es_relevante = any(p in titulo.lower() for p in TODAS_PALABRAS)
-                        
-                        if es_relevante:
-                            # Obtener URL del video
-                            video_url = post_data.get('url', '')
+                        try:
+                            post_data = post['data']
                             
-                            # Si es video de Reddit directo
-                            if 'v.redd.it' in video_url or post_data.get('is_video'):
-                                categoria = detectar_categoria(titulo, '')
+                            # Solo posts con video
+                            if not post_data.get('is_video') and 'v.redd.it' not in post_data.get('url', ''):
+                                continue
+                            
+                            titulo = post_data.get('title', '')
+                            
+                            # Verificar relevancia
+                            es_relevante = any(p in titulo.lower() for p in TODAS_PALABRAS)
+                            
+                            if es_relevante:
+                                # Obtener URL del video
+                                video_url = post_data.get('url', '')
+                                permalink = post_data.get('permalink', '')
                                 
-                                videos.append({
-                                    'titulo': titulo,
-                                    'descripcion': post_data.get('selftext', '')[:300],
-                                    'url': f"https://www.reddit.com{post_data.get('permalink', '')}",
-                                    'video_url_directa': video_url if 'v.redd.it' in video_url else None,
-                                    'fuente': f'Reddit/r/{subreddit}',
-                                    'fecha': datetime.fromtimestamp(post_data.get('created_utc', 0)).isoformat(),
-                                    'puntaje': 9,
-                                    'tipo_url': 'reddit',
-                                    'categoria': categoria,
-                                    'reddit_id': post_data.get('id')
-                                })
-                                
+                                # Si es video de Reddit directo
+                                if 'v.redd.it' in video_url or post_data.get('is_video'):
+                                    categoria = detectar_categoria(titulo, '')
+                                    
+                                    videos.append({
+                                        'titulo': titulo,
+                                        'descripcion': post_data.get('selftext', '')[:300],
+                                        'url': f"https://www.reddit.com{permalink}",
+                                        'video_url_directa': video_url if 'v.redd.it' in video_url else None,
+                                        'fuente': f'Reddit/r/{subreddit}',
+                                        'fecha': datetime.fromtimestamp(post_data.get('created_utc', 0)).isoformat(),
+                                        'puntaje': 9,
+                                        'tipo_url': 'reddit',
+                                        'categoria': categoria,
+                                        'reddit_id': post_data.get('id')
+                                    })
+                        except Exception as e:
+                            continue
+                            
             except Exception as e:
                 log(f"Error Reddit {subreddit}: {str(e)[:50]}", 'advertencia')
                 continue
@@ -409,120 +492,216 @@ def buscar_videos_reddit():
     except Exception as e:
         log(f"Error general Reddit: {str(e)[:50]}", 'advertencia')
     
-    log(f"Reddit: {len(videos)} videos", 'video')
+    log(f"Reddit: {len(videos)} videos encontrados", 'video')
     return videos
 
-def buscar_videos_newsapi_con_filtro():
+def buscar_videos_vimeo():
     """
-    Busca noticias con video en NewsAPI, pero solo procesa las que tienen video descargable
+    Busca videos en canales de Vimeo de noticias
+    Vimeo es más permisivo que YouTube
+    """
+    videos = []
+    
+    try:
+        # Vimeo tiene un endpoint de búsqueda básica
+        terminos = ['war', 'conflict', 'news', 'documentary', 'military']
+        
+        for termino in random.sample(terminos, 3):
+            try:
+                # API básica de Vimeo (pública para búsquedas simples)
+                url = f"https://vimeo.com/search?q={termino}&type=videos"
+                
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                }
+                
+                resp = requests.get(url, headers=headers, timeout=15)
+                
+                if resp.status_code == 200:
+                    # Extraer URLs de videos de la página HTML
+                    pattern = r'https://vimeo\.com/(\d+)'
+                    matches = re.findall(pattern, resp.text)
+                    
+                    for video_id in set(matches[:5]):  # Evitar duplicados
+                        try:
+                            # Obtener info del video oEmbed
+                            oembed_url = f"https://vimeo.com/api/oembed.json?url=https://vimeo.com/{video_id}"
+                            info_resp = requests.get(oembed_url, timeout=10)
+                            
+                            if info_resp.status_code == 200:
+                                info = info_resp.json()
+                                titulo = info.get('title', '')
+                                descripcion = info.get('description', '') or ''
+                                
+                                es_relevante = any(p in f"{titulo} {descripcion}".lower() for p in TODAS_PALABRAS)
+                                
+                                if es_relevante:
+                                    categoria = detectar_categoria(titulo, descripcion)
+                                    
+                                    videos.append({
+                                        'titulo': titulo,
+                                        'descripcion': descripcion[:300],
+                                        'url': f"https://vimeo.com/{video_id}",
+                                        'fuente': 'Vimeo',
+                                        'fecha': datetime.now().isoformat(),
+                                        'puntaje': 7,
+                                        'tipo_url': 'vimeo',
+                                        'categoria': categoria
+                                    })
+                        except:
+                            continue
+                            
+            except Exception as e:
+                continue
+                
+    except Exception as e:
+        log(f"Error Vimeo: {str(e)[:50]}", 'advertencia')
+    
+    log(f"Vimeo: {len(videos)} videos encontrados", 'video')
+    return videos
+
+def buscar_videos_newsapi():
+    """
+    Busca noticias con video usando NewsAPI
+    CORREGIDO: Mejor filtrado de URLs de video
     """
     videos = []
     if not NEWS_API_KEY:
         log("NewsAPI no configurado", 'advertencia')
         return videos
     
-    # Buscar noticias de video específicamente
-    terminos = [
-        'site:youtube.com war conflict', 'site:youtube.com military',
-        'site:dailymotion.com news conflict', 'site:liveleak.com',
-        'war footage video', 'military operation video'
-    ]
-    
-    for termino in random.sample(terminos, 2):
-        try:
-            resp = requests.get(
-                "https://newsapi.org/v2/everything ",
-                params={
-                    'q': termino,
-                    'language': 'en',
-                    'sortBy': 'publishedAt',
-                    'pageSize': 15,
-                    'apiKey': NEWS_API_KEY
-                },
-                timeout=15
-            )
-            data = resp.json()
-            
-            if data.get('status') == 'ok':
-                for art in data.get('articles', []):
-                    titulo = art.get('title', '')
-                    url = art.get('url', '')
-                    
-                    if not titulo or '[Removed]' in titulo:
-                        continue
-                    
-                    # Solo procesar si la URL es de una plataforma de video conocida
-                    es_video_url = any(v in url.lower() for v in [
-                        'youtube.com', 'youtu.be', 'dailymotion.com', 
-                        'vimeo.com', 'rumble.com', 'bitchute.com'
-                    ])
-                    
-                    if es_video_url:
-                        categoria = detectar_categoria(titulo, art.get('description', ''))
+    try:
+        # Términos de búsqueda específicos para video
+        queries = [
+            'war video footage',
+            'military conflict video',
+            'breaking news video',
+            'drone footage war',
+            'combat footage'
+        ]
+        
+        for query in random.sample(queries, 2):
+            try:
+                resp = requests.get(
+                    "https://newsapi.org/v2/everything",
+                    params={
+                        'q': query,
+                        'language': 'en',
+                        'sortBy': 'publishedAt',
+                        'pageSize': 20,
+                        'apiKey': NEWS_API_KEY
+                    },
+                    timeout=15
+                )
+                data = resp.json()
+                
+                if data.get('status') == 'ok':
+                    for art in data.get('articles', []):
+                        titulo = art.get('title', '')
+                        url = art.get('url', '')
+                        contenido = art.get('content', '') or art.get('description', '')
                         
-                        videos.append({
-                            'titulo': titulo,
-                            'descripcion': art.get('description', ''),
-                            'url': url,
-                            'fuente': art.get('source', {}).get('name', 'NewsAPI'),
-                            'fecha': art.get('publishedAt', ''),
-                            'puntaje': 8 if categoria in ['conflictos_guerra', 'narcotrafico'] else 5,
-                            'tipo_url': 'newsapi_video',
-                            'categoria': categoria
-                        })
+                        if not titulo or '[Removed]' in titulo:
+                            continue
                         
-        except Exception as e:
-            log(f"Error NewsAPI: {str(e)[:50]}", 'advertencia')
+                        # Buscar URLs de video en el contenido
+                        video_urls = []
+                        
+                        # Dailymotion
+                        if 'dailymotion.com' in url or 'dai.ly' in url:
+                            video_urls.append(('dailymotion', url))
+                        
+                        # Vimeo
+                        if 'vimeo.com' in url:
+                            video_urls.append(('vimeo', url))
+                        
+                        # Extraer URLs de video del contenido
+                        dm_matches = re.findall(r'https?://(?:www\.)?dailymotion\.com/video/[a-zA-Z0-9]+', contenido)
+                        vimeo_matches = re.findall(r'https?://(?:www\.)?vimeo\.com/\d+', contenido)
+                        
+                        for match in dm_matches:
+                            video_urls.append(('dailymotion', match))
+                        for match in vimeo_matches:
+                            video_urls.append(('vimeo', match))
+                        
+                        # Si encontramos URLs de video
+                        for tipo_video, video_url in video_urls:
+                            categoria = detectar_categoria(titulo, art.get('description', ''))
+                            
+                            videos.append({
+                                'titulo': titulo,
+                                'descripcion': art.get('description', ''),
+                                'url': video_url,
+                                'fuente': art.get('source', {}).get('name', 'NewsAPI'),
+                                'fecha': art.get('publishedAt', ''),
+                                'puntaje': 8 if categoria in ['conflictos_guerra', 'narcotrafico'] else 5,
+                                'tipo_url': tipo_video,
+                                'categoria': categoria
+                            })
+                            
+            except Exception as e:
+                log(f"Error NewsAPI query {query}: {str(e)[:50]}", 'advertencia')
+                
+    except Exception as e:
+        log(f"Error general NewsAPI: {str(e)[:50]}", 'advertencia')
     
-    log(f"NewsAPI (filtrado): {len(videos)} videos", 'info')
+    log(f"NewsAPI: {len(videos)} videos encontrados", 'info')
     return videos
 
-def buscar_videos_rss_simple():
+def buscar_videos_rss():
     """
-    RSS simplificado - solo busca enlaces directos de video en feeds
+    RSS feeds de video - CORREGIDO
     """
     videos = []
     
-    for feed_url in RSS_FEEDS_VIDEO[:2]:  # Solo 2 para no saturar
+    for feed_url in RSS_FEEDS_VIDEO[:2]:
         try:
             feed = feedparser.parse(feed_url)
             fuente = feed.feed.get('title', 'RSS')
             
-            for entry in feed.entries[:3]:
-                titulo = entry.get('title', '')
-                if not titulo:
-                    continue
-                
-                # Buscar media content con URL directa de video
-                video_url = None
-                
-                if hasattr(entry, 'media_content'):
-                    for media in entry.media_content:
-                        url = media.get('url', '')
-                        # Solo si es URL directa de video
-                        if any(ext in url.lower() for ext in ['.mp4', '.m3u8', 'video']):
-                            video_url = url
-                            break
-                
-                # Si encontramos video directo
-                if video_url:
-                    categoria = detectar_categoria(titulo, entry.get('summary', ''))
+            for entry in feed.entries[:5]:
+                try:
+                    titulo = entry.get('title', '')
+                    if not titulo:
+                        continue
                     
-                    videos.append({
-                        'titulo': titulo,
-                        'descripcion': entry.get('summary', ''),
-                        'url': video_url,  # URL directa del video
-                        'fuente': fuente,
-                        'fecha': entry.get('published', ''),
-                        'puntaje': 7,
-                        'tipo_url': 'rss_directo',
-                        'categoria': categoria
-                    })
+                    # Buscar media content
+                    video_url = None
+                    
+                    if hasattr(entry, 'media_content'):
+                        for media in entry.media_content:
+                            url = media.get('url', '')
+                            if any(ext in url.lower() for ext in ['.mp4', '.m3u8', 'video']):
+                                video_url = url
+                                break
+                    
+                    # Buscar en enlaces
+                    if not video_url and hasattr(entry, 'links'):
+                        for link in entry.links:
+                            if 'video' in link.get('type', ''):
+                                video_url = link.href
+                                break
+                    
+                    if video_url:
+                        categoria = detectar_categoria(titulo, entry.get('summary', ''))
+                        
+                        videos.append({
+                            'titulo': titulo,
+                            'descripcion': entry.get('summary', ''),
+                            'url': video_url,
+                            'fuente': fuente,
+                            'fecha': entry.get('published', ''),
+                            'puntaje': 6,
+                            'tipo_url': 'rss_directo',
+                            'categoria': categoria
+                        })
+                except:
+                    continue
                     
         except Exception as e:
-            continue
+            log(f"Error RSS {feed_url}: {str(e)[:50]}", 'advertencia')
     
-    log(f"RSS (directo): {len(videos)} videos", 'info')
+    log(f"RSS: {len(videos)} videos encontrados", 'info')
     return videos
 
 def buscar_todos_videos():
@@ -531,20 +710,24 @@ def buscar_todos_videos():
     
     todos_videos = []
     
-    # Fuente 1: Dailymotion (más estable, no bloquea)
+    # Fuente 1: Dailymotion (más estable)
     todos_videos.extend(buscar_videos_dailymotion())
     
-    # Fuente 2: Reddit (mucho contenido de conflictos)
+    # Fuente 2: Reddit (con delay para rate limiting)
     if len(todos_videos) < 5:
         todos_videos.extend(buscar_videos_reddit())
     
-    # Fuente 3: NewsAPI con filtro de video
+    # Fuente 3: Vimeo
     if len(todos_videos) < 5:
-        todos_videos.extend(buscar_videos_newsapi_con_filtro())
+        todos_videos.extend(buscar_videos_vimeo())
     
-    # Fuente 4: RSS con videos directos
+    # Fuente 4: NewsAPI
+    if len(todos_videos) < 5:
+        todos_videos.extend(buscar_videos_newsapi())
+    
+    # Fuente 5: RSS
     if len(todos_videos) < 3:
-        todos_videos.extend(buscar_videos_rss_simple())
+        todos_videos.extend(buscar_videos_rss())
     
     # Eliminar duplicados por URL
     urls_vistas = set()
@@ -565,6 +748,7 @@ def buscar_todos_videos():
 def descargar_video(url, tipo_fuente='dailymotion', info_extra=None):
     """
     Descarga video según la fuente
+    CORREGIDO: Mejor manejo de errores y formatos
     """
     if not url:
         return None, None
@@ -572,22 +756,26 @@ def descargar_video(url, tipo_fuente='dailymotion', info_extra=None):
     log(f"Descargando desde {tipo_fuente}: {url[:60]}...", 'video')
     
     try:
-        # Configuración base
+        # Configuración base mejorada
         ydl_opts = {
-            'format': 'best[height>=720][ext=mp4][filesize<100M]/best[height>=720][filesize<100M]/best[ext=mp4][filesize<100M]/best[filesize<100M]',
+            'format': 'best[height<=720][filesize<80M]/best[height<=480][filesize<80M]/best[filesize<80M]',
             'outtmpl': '/tmp/video_%(id)s_%(height)s.%(ext)s',
-            'max_filesize': 100000000,
+            'max_filesize': 80000000,  # 80MB
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            }
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            },
+            'socket_timeout': 30,
+            'retries': 3,
         }
         
         # Configuración específica por fuente
         if tipo_fuente == 'reddit':
-            ydl_opts['format'] = 'best[filesize<100M]/best'
+            ydl_opts['format'] = 'best[filesize<80M]/best'
+        elif tipo_fuente == 'vimeo':
+            ydl_opts['format'] = 'best[height<=720]/best'
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -595,34 +783,44 @@ def descargar_video(url, tipo_fuente='dailymotion', info_extra=None):
             if not info:
                 return None, None
             
-            # Verificar duración
+            # Verificar duración (máximo 5 minutos)
             duracion = info.get('duration', 0)
-            if duracion > 300:  # 5 minutos máximo
-                log(f"Video muy largo ({duracion}s)", 'advertencia')
+            if duracion > 300:
+                log(f"Video muy largo ({duracion}s), ignorando", 'advertencia')
                 return None, info
             
             # Descargar
             ydl.download([url])
             
-            # Encontrar archivo
+            # Encontrar archivo descargado
             video_path = ydl.prepare_filename(info)
             
             if not os.path.exists(video_path):
                 base = os.path.splitext(video_path)[0]
-                for ext in ['.mp4', '.mkv', '.webm']:
+                for ext in ['.mp4', '.mkv', '.webm', '.mov']:
                     if os.path.exists(base + ext):
                         video_path = base + ext
                         break
             
-            if os.path.exists(video_path) and os.path.getsize(video_path) > 500000:
+            if os.path.exists(video_path):
                 size_mb = os.path.getsize(video_path) / 1024 / 1024
-                log(f"Descargado: {size_mb:.1f} MB", 'exito')
-                return video_path, info
+                if size_mb > 0.5:  # Mínimo 500KB
+                    log(f"Descargado: {size_mb:.1f} MB", 'exito')
+                    return video_path, info
+                else:
+                    os.remove(video_path)
+                    return None, info
             
             return None, info
             
     except Exception as e:
-        log(f"Error descarga: {str(e)[:80]}", 'error')
+        error_msg = str(e)
+        if "unavailable" in error_msg.lower():
+            log(f"Video no disponible", 'advertencia')
+        elif "private" in error_msg.lower():
+            log(f"Video privado", 'advertencia')
+        else:
+            log(f"Error descarga: {error_msg[:80]}", 'error')
         return None, None
 
 def verificar_video(video_path):
@@ -635,47 +833,54 @@ def verificar_video(video_path):
         if size < 500000:  # Menos de 500KB
             return False, "Muy pequeño"
         
-        # Verificar con ffprobe
-        cmd = [
-            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
-            '-show_entries', 'stream=width,height,duration',
-            '-of', 'json', video_path
-        ]
+        # Verificar con ffprobe si está disponible
+        try:
+            cmd = [
+                'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                '-show_entries', 'stream=width,height,duration',
+                '-of', 'json', video_path
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            info = json.loads(result.stdout)
+            
+            if 'streams' in info and info['streams']:
+                stream = info['streams'][0]
+                height = stream.get('height', 0)
+                duration = float(stream.get('duration', 0))
+                
+                log(f"Video: {height}p | {duration:.1f}s", 'debug')
+                
+                if height < 360:  # Calidad mínima aceptable
+                    return False, f"Baja calidad ({height}p)"
+                
+                if duration > 300:
+                    return recortar_video(video_path, 180)
+                
+                return True, video_path
+        except:
+            # Si ffprobe falla, asumir que está bien si tiene tamaño adecuado
+            pass
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        info = json.loads(result.stdout)
-        
-        if 'streams' in info and info['streams']:
-            stream = info['streams'][0]
-            height = stream.get('height', 0)
-            duration = float(stream.get('duration', 0))
-            
-            log(f"Video: {height}p | {duration:.1f}s", 'debug')
-            
-            if height < 480:  # Calidad mínima aceptable
-                return False, f"Baja calidad ({height}p)"
-            
-            if duration > 300:
-                return recortar_video(video_path, 180)
-            
-            return True, video_path
-        
-        return False, "No se pudo analizar"
+        return True, video_path
         
     except Exception as e:
         log(f"Error verificación: {e}", 'advertencia')
-        return True, video_path  # Asumir OK
+        return True, video_path
 
 def recortar_video(video_path, duracion=180):
-    """Recorta video"""
+    """Recorta video a duración específica"""
     try:
         output = video_path.replace('.mp4', '_cut.mp4')
+        if output == video_path:
+            output = video_path + '_cut.mp4'
         
         cmd = [
             'ffmpeg', '-y', '-i', video_path,
             '-t', str(duracion),
             '-c:v', 'libx264', '-preset', 'fast',
             '-c:a', 'aac', '-b:a', '128k',
+            '-movflags', '+faststart',
             output
         ]
         
@@ -697,7 +902,7 @@ def recortar_video(video_path, duracion=180):
 def publicar_video(titulo, descripcion, video_path, categoria):
     """Publica video en Facebook"""
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
-        log("Faltan credenciales", 'error')
+        log("Faltan credenciales Facebook", 'error')
         return False
     
     if not os.path.exists(video_path):
@@ -708,7 +913,7 @@ def publicar_video(titulo, descripcion, video_path, categoria):
     
     mensaje = f"""🎬 {titulo}
 
-{descripcion[:250]}{"..." if len(descripcion) > 250 else ""}
+{descripcion[:200]}{"..." if len(descripcion) > 200 else ""}
 
 {hashtags} #Video #Noticias
 
@@ -721,7 +926,7 @@ def publicar_video(titulo, descripcion, video_path, categoria):
     log(f"Subiendo a Facebook ({size_mb:.1f} MB)...", 'video')
     
     try:
-        url = f"https://graph.facebook.com/v18.0/ {FB_PAGE_ID}/videos"
+        url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/videos"
         
         with open(video_path, 'rb') as f:
             resp = requests.post(
@@ -790,7 +995,7 @@ def main():
     
     candidatos = videos_nuevos if videos_nuevos else videos
     
-    # Evitar misma fuente
+    # Evitar misma fuente consecutiva
     ultima_fuente = estado.get('ultima_fuente', '')
     diferentes = [v for v in candidatos if v['fuente'] != ultima_fuente]
     if diferentes:
@@ -799,7 +1004,7 @@ def main():
     # Ordenar por puntaje
     candidatos.sort(key=lambda x: x.get('puntaje', 0), reverse=True)
     
-    # Intentar descargar y publicar
+    # Intentar descargar y publicar (máximo 5 intentos)
     for intento, video_info in enumerate(candidatos[:5]):
         log(f"\nIntento {intento+1}: {video_info['titulo'][:50]}...")
         log(f"Fuente: {video_info['fuente']} | Tipo: {video_info['tipo_url']}")
@@ -816,7 +1021,7 @@ def main():
             log("No se pudo descargar, siguiente...", 'advertencia')
             continue
         
-        # Verificar
+        # Verificar video
         ok, resultado = verificar_video(video_path)
         
         if not ok:
@@ -838,15 +1043,22 @@ def main():
             video_info.get('categoria', 'conflictos_guerra')
         )
         
-        # Limpiar
+        # Limpiar archivo temporal
         try:
             if os.path.exists(video_path):
                 os.remove(video_path)
-        except:
+                # Limpiar también archivos relacionados
+                base = os.path.splitext(video_path)[0]
+                for ext in ['.mp4', '.mkv', '.webm', '.mov', '.part']:
+                    for suffix in ['', '_cut']:
+                        f = base + suffix + ext
+                        if os.path.exists(f):
+                            os.remove(f)
+        except Exception as e:
             pass
         
         if exito:
-            # Guardar
+            # Guardar en historial
             guardar_historial(
                 historial, 
                 video_info['url'], 
@@ -863,16 +1075,16 @@ def main():
             guardar_estado(estado)
             
             print("\n" + "="*70)
-            log("VIDEO PUBLICADO", 'exito')
-            print(f"🎬 {video_info['titulo'][:50]}...")
+            log("VIDEO PUBLICADO EXITOSAMENTE", 'exito')
+            print(f"🎬 {video_info['titulo'][:60]}...")
             print(f"🏢 {video_info['fuente']}")
-            print(f"📂 {video_info.get('categoria', 'conflictos_guerra')}")
-            print(f"📊 Total: {estado['total_publicadas']}")
-            print(f"⏰ Próximo: {(datetime.now() + timedelta(hours=1)).strftime('%H:%M')}")
+            print(f"📂 Categoría: {video_info.get('categoria', 'conflictos_guerra')}")
+            print(f"📊 Total publicadas: {estado['total_publicadas']}")
+            print(f"⏰ Próxima publicación: {(datetime.now() + timedelta(minutes=TIEMPO_ENTRE_PUBLICACIONES)).strftime('%H:%M')}")
             print("="*70)
             return True
         
-        log("Falló, intentando siguiente...", 'advertencia')
+        log("Falló publicación, intentando siguiente...", 'advertencia')
     
     log("Todos los intentos fallaron", 'error')
     return False
@@ -882,7 +1094,7 @@ if __name__ == "__main__":
         resultado = main()
         exit(0 if resultado else 1)
     except KeyboardInterrupt:
-        log("Interrumpido", 'advertencia')
+        log("Interrumpido por usuario", 'advertencia')
         exit(1)
     except Exception as e:
         log(f"Error crítico: {e}", 'error')
