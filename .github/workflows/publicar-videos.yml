@@ -1,37 +1,8 @@
-name: Bot Reels - Cada hora
-
-on:
-  schedule:
-    - cron: '0 * * * *'
-  workflow_dispatch:
-
-jobs:
-  publicar:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    
-    steps:
-      - uses: actions/checkout@v3
-      
-      - uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-      
-      - name: Instalar ffmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-      
-      - name: Instalar dependencias
-        run: pip install requests feedparser
-      
-      - name: Instalar yt-dlp
-        run: pip install yt-dlp
-      
-      - name: Ejecutar bot
-        env:
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}  # Opcional
-          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-        run: python bot_reels.py
+- name: Ejecutar bot con debug
+  env:
+    YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+    RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+    FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+    FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+  run: |
+    python -u bot_reels.py 2>&1
