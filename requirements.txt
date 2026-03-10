@@ -1,2 +1,5 @@
-yt-dlp
-requests
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+Pillow>=10.0.0
+python-dateutil>=2.8.2
+yt-dlp>=2023.12.30  ← NUEVO: Descargador de videos
