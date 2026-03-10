@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot de Reels - Verdad Hoy v5.1 (Optimizado)
-YouTube → Facebook con timeouts estrictos
+Bot de Reels - Verdad Hoy v6.0 (Reddit + YouTube)
+Busca noticias virales en Reddit y descarga videos de YouTube
 """
 
 import os
@@ -10,7 +10,7 @@ import sys
 import subprocess
 import random
 import re
-import signal
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -21,186 +21,295 @@ FB_PAGE_ID = os.getenv('FB_PAGE_ID')
 TEMP_DIR = Path('/tmp/videos_bot')
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Timeouts estrictos (segundos)
-TIMEOUT_BUSQUEDA = 20      # Máximo 20 segundos buscando
-TIMEOUT_DESCARGA = 60      # Máximo 60 segundos descargando
-TIMEOUT_PUBLICACION = 90   # Máximo 90 segundos publicando
-
-# Canales de YouTube simplificados (los más confiables)
-CANALES_NOTICIAS = [
-    'UC16niRr50-MSBwiO3YDb3RA',  # BBC News
-    'UCupvZG-5ko_eiXAupbDfxWw',  # CNN
-    'UChqUTb7kYRX8-EiaN3XFrSQ',  # Reuters
-    'UCQfwfsi5VrQ8yKZ-UWmAEFg',  # France 24
+# Subreddits de noticias y política
+SUBREDDITS = [
+    'worldnews', 'news', 'politics', 'internationalpolitics',
+    'geopolitics', 'conflict', 'ukrainewar', 'israel', 'gaza'
 ]
 
+# Palabras clave para filtrar posts relevantes
 PALABRAS_CLAVE = [
-    'war', 'ukraine', 'gaza', 'israel', 'conflict', 'military',
-    'breaking', 'trump', 'biden', 'russia', 'crisis', 'attack'
+    'war', 'ukraine', 'gaza', 'israel', 'conflict', 'military', 'attack',
+    'breaking', 'trump', 'biden', 'russia', 'crisis', 'news', 'president',
+    'election', 'politics', 'world', 'video', 'watch', 'footage'
 ]
 
 def log(msg, tipo='info'):
-    iconos = {'info': 'ℹ️', 'ok': '✅', 'error': '❌', 'warn': '⚠️', 'yt': '📺', 'fb': '📘'}
+    iconos = {
+        'info': 'ℹ️', 'ok': '✅', 'error': '❌', 'warn': '⚠️', 
+        'yt': '📺', 'fb': '📘', 'reddit': '🤖', 'debug': '🔍'
+    }
     hora = datetime.now().strftime('%H:%M:%S')
     print(f"[{hora}] {iconos.get(tipo, 'ℹ️')} {msg}", flush=True)
 
-def ejecutar_comando(cmd, timeout, descripcion):
-    """Ejecuta comando con timeout estricto"""
-    log(f"⏱️ {descripcion} (max {timeout}s)...")
+def ejecutar_comando(cmd, timeout=30):
+    """Ejecuta comando con timeout"""
     try:
-        result = subprocess.run(
-            cmd, 
-            capture_output=True, 
-            text=True, 
-            timeout=timeout
-        )
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         return result
     except subprocess.TimeoutExpired:
-        log(f"⏰ Timeout en {descripcion}", 'error')
+        log("⏰ Timeout", 'error')
         return None
     except Exception as e:
-        log(f"❌ Error en {descripcion}: {str(e)[:60]}", 'error')
+        log(f"❌ Error: {str(e)[:60]}", 'error')
         return None
 
-def buscar_video_rapido():
-    """Busca video con timeout estricto"""
-    log("🔍 Buscando video...", 'yt')
+def obtener_posts_reddit():
+    """Obtiene posts hot de Reddit usando curl (sin API)"""
+    log("🔍 Buscando noticias en Reddit...", 'reddit')
     
-    canal = random.choice(CANALES_NOTICIAS)
+    subreddit = random.choice(SUBREDDITS)
+    url = f"https://www.reddit.com/r/{subreddit}/hot.json?limit=25"
     
-    # Comando simplificado y rápido
+    cmd = [
+        'curl', '-s', '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        '-H', 'Accept: application/json',
+        url
+    ]
+    
+    result = ejecutar_comando(cmd, timeout=15)
+    
+    if not result or result.returncode != 0:
+        log(f"❌ Error conectando a Reddit", 'error')
+        return []
+    
+    try:
+        data = json.loads(result.stdout)
+        posts = data.get('data', {}).get('children', [])
+        
+        videos_encontrados = []
+        
+        for post in posts:
+            post_data = post.get('data', {})
+            titulo = post_data.get('title', '')
+            url_post = post_data.get('url', '')
+            permalink = post_data.get('permalink', '')
+            score = post_data.get('score', 0)
+            
+            # Verificar si es contenido relevante
+            titulo_lower = titulo.lower()
+            es_relevante = any(palabra in titulo_lower for palabra in PALABRAS_CLAVE)
+            
+            if es_relevante and score > 50:  # Más de 50 upvotes
+                # Buscar si tiene video de YouTube
+                if 'youtube.com' in url_post or 'youtu.be' in url_post:
+                    videos_encontrados.append({
+                        'titulo': titulo,
+                        'url': url_post,
+                        'score': score,
+                        'subreddit': subreddit,
+                        'reddit_url': f"https://reddit.com{permalink}"
+                    })
+                    log(f"  🎬 {titulo[:60]}... (Score: {score})", 'ok')
+        
+        log(f"✅ {len(videos_encontrados)} videos encontrados en r/{subreddit}", 'ok')
+        return videos_encontrados
+        
+    except Exception as e:
+        log(f"❌ Error parseando Reddit: {str(e)[:60]}", 'error')
+        return []
+
+def extraer_video_id(url):
+    """Extrae ID de video de YouTube de una URL"""
+    patterns = [
+        r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})',
+        r'youtube\.com\/embed\/([a-zA-Z0-9_-]{11})'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    return None
+
+def buscar_video():
+    """Busca video en Reddit y extrae info de YouTube"""
+    posts = obtener_posts_reddit()
+    
+    if not posts:
+        log("⚠️ No se encontraron posts, intentando método directo...", 'warn')
+        return buscar_youtube_directo()
+    
+    # Ordenar por score (más populares primero)
+    posts.sort(key=lambda x: x['score'], reverse=True)
+    
+    for post in posts[:5]:  # Probar los 5 más populares
+        video_id = extraer_video_id(post['url'])
+        
+        if video_id:
+            log(f"✅ Video seleccionado: {post['titulo'][:60]}...", 'ok')
+            return {
+                'id': video_id,
+                'titulo': post['titulo'],
+                'url': f'https://youtube.com/watch?v={video_id}',
+                'fuente': f"Reddit r/{post['subreddit']}"
+            }
+    
+    log("⚠️ Ningún post tenía video de YouTube válido", 'warn')
+    return buscar_youtube_directo()
+
+def buscar_youtube_directo():
+    """Método de respaldo: busca en YouTube directamente"""
+    log("🔍 Buscando directamente en YouTube...", 'yt')
+    
+    # Términos de búsqueda de noticias recientes
+    terminos = [
+        'breaking news today',
+        'world news latest',
+        'ukraine war latest',
+        'gaza news today',
+        'trump news today'
+    ]
+    
+    termino = random.choice(terminos)
+    
     cmd = [
         'yt-dlp',
-        f'https://www.youtube.com/channel/{canal}/videos',
-        '--playlist-end', '5',
-        '--match-filter', 'duration < 180',  # Máximo 3 minutos
+        f'ytsearch5:{termino}',
+        '--match-filter', 'duration < 300',  # Menos de 5 min
         '--get-id', '--get-title',
-        '--dateafter', 'now-1day',  # Solo últimas 24 horas
+        '--dateafter', 'now-2days',
         '--quiet', '--no-warnings'
     ]
     
-    result = ejecutar_comando(cmd, TIMEOUT_BUSQUEDA, "búsqueda YouTube")
+    result = ejecutar_comando(cmd, timeout=30)
     
     if not result or result.returncode != 0:
         return None
     
     lineas = result.stdout.strip().split('\n')
-    if len(lineas) < 2:
-        return None
-    
-    # Tomar el primer video encontrado (más reciente)
-    for i in range(0, min(len(lineas), 10), 2):
-        if i+1 >= len(lineas):
-            continue
-            
-        video_id = lineas[i].strip()
-        titulo = lineas[i+1].strip()
+    if len(lineas) >= 2:
+        video_id = lineas[0].strip()
+        titulo = lineas[1].strip()
         
-        # Verificar relevancia
-        titulo_lower = titulo.lower()
-        if any(palabra in titulo_lower for palabra in PALABRAS_CLAVE):
-            if len(video_id) == 11:
-                log(f"✅ Encontrado: {titulo[:50]}...", 'ok')
-                return {
-                    'id': video_id,
-                    'titulo': titulo,
-                    'url': f'https://youtube.com/watch?v={video_id}'
-                }
+        if len(video_id) == 11:
+            log(f"✅ Encontrado (directo): {titulo[:60]}...", 'ok')
+            return {
+                'id': video_id,
+                'titulo': titulo,
+                'url': f'https://youtube.com/watch?v={video_id}',
+                'fuente': 'YouTube Search'
+            }
     
-    log("⚠️ No encontrado relevante", 'warn')
     return None
 
-def descargar_video_rapido(video_id):
-    """Descarga con formato optimizado"""
-    url = f"https://youtube.com/watch?v={video_id}"
+def descargar_video(video_info):
+    """Descarga el video de YouTube"""
+    video_id = video_info['id']
+    url = video_info['url']
     output_path = TEMP_DIR / f"video_{video_id}.mp4"
     
-    # Eliminar si existe
     output_path.unlink(missing_ok=True)
+    
+    log(f"⬇️ Descargando video...", 'yt')
+    
+    # Primero verificar si es un Short (formato diferente)
+    cmd_info = ['yt-dlp', '--print', 'duration', url, '--quiet']
+    result_info = ejecutar_comando(cmd_info, timeout=10)
+    
+    # Elegir formato según duración
+    if result_info and result_info.stdout.strip():
+        try:
+            duracion = int(float(result_info.stdout.strip()))
+            if duracion <= 60:
+                # Short - usar formato específico
+                formato = 'best[height<=1080][filesize<20M]'
+                log(f"  📱 Detectado Short ({duracion}s)", 'info')
+            else:
+                # Video normal
+                formato = 'best[height<=720][filesize<30M]'
+                log(f"  🎥 Video normal ({duracion}s)", 'info')
+        except:
+            formato = 'best[filesize<30M]'
+    else:
+        formato = 'best[filesize<30M]'
     
     cmd = [
         'yt-dlp',
-        '-f', 'worst[height>=360][filesize<20M]/best[filesize<20M]',  # Más pequeño posible
-        '--max-filesize', '20M',
+        '-f', formato,
+        '--max-filesize', '30M',
         '-o', str(output_path),
         '--no-playlist', '--quiet', '--no-warnings',
-        '--socket-timeout', '10',
-        '--retries', '1',
+        '--socket-timeout', '15',
+        '--retries', '2',
         url
     ]
     
-    result = ejecutar_comando(cmd, TIMEOUT_DESCARGA, "descarga")
+    result = ejecutar_comando(cmd, timeout=90)
     
     if result and result.returncode == 0 and output_path.exists():
         size_mb = output_path.stat().st_size / (1024*1024)
-        if size_mb > 0.5:  # Mínimo 500KB
+        if size_mb > 0.5:
             log(f"✅ Descargado: {size_mb:.1f} MB", 'ok')
             return str(output_path)
     
+    log("❌ Error descargando video", 'error')
     return None
 
-def generar_texto(titulo):
-    """Texto rápido y efectivo"""
+def generar_texto(titulo, fuente):
+    """Genera texto atractivo para Facebook"""
+    # Limpiar título
     titulo_limpio = re.sub(r'[^\w\s\-.,;:¡!¿?áéíóúÁÉÍÓÚñÑ]', '', titulo)
-    if len(titulo_limpio) > 100:
-        titulo_limpio = titulo_limpio[:97] + "..."
+    if len(titulo_limpio) > 130:
+        titulo_limpio = titulo_limpio[:127] + "..."
     
-    intros = ["🚨 ÚLTIMA HORA", "📰 NOTICIA IMPORTANTE", "🌍 DESARROLLO"]
-    cierres = ["¿Qué opinas? 👇", "Comparte 📢", "¿Impactará? 🤔"]
+    intros = [
+        "🚨 ÚLTIMA HORA", "📰 NOTICIA IMPORTANTE", 
+        "🌍 DESARROLLO INTERNACIONAL", "⚡ INFORMACIÓN RELEVANTE"
+    ]
     
-    return f"""{random.choice(intros)}
+    cierres = [
+        "¿Qué opinas? Comenta 👇",
+        "Comparte esta información 📢",
+        "¿Crees que esto tendrá impacto? 🤔",
+        "Mantente informado con Verdad Hoy 📱"
+    ]
+    
+    texto = f"""{random.choice(intros)}
 
 {titulo_limpio}
 
+📡 Fuente: {fuente}
+
 {random.choice(cierres)}
 
-#Noticias #Actualidad #VerdadHoy"""
+#Noticias #Actualidad #ÚltimaHora #VerdadHoy #NoticiasAlMinuto"""
+    
+    return texto[:1990]
 
-def publicar_rapido(video_path, texto):
-    """Publicación con timeout"""
-    log("📘 Publicando...", 'fb')
+def publicar_facebook(video_path, texto):
+    """Publica el video en Facebook"""
+    log("📘 Publicando en Facebook...", 'fb')
     
     import requests
-    from requests.adapters import HTTPAdapter
-    from urllib3.util.retry import Retry
-    
-    # Configurar session con timeouts
-    session = requests.Session()
-    adapter = HTTPAdapter(max_retries=1)
-    session.mount('https://', adapter)
     
     url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/videos"
     
     try:
         with open(video_path, 'rb') as f:
             files = {'file': ('video.mp4', f, 'video/mp4')}
-            data = {'description': texto, 'access_token': FB_ACCESS_TOKEN}
+            data = {
+                'description': texto,
+                'access_token': FB_ACCESS_TOKEN
+            }
             
-            resp = session.post(
-                url, 
-                files=files, 
-                data=data, 
-                timeout=TIMEOUT_PUBLICACION
-            )
+            resp = requests.post(url, files=files, data=data, timeout=180)
             result = resp.json()
         
         if 'id' in result:
-            log(f"✅ Publicado: {result['id']}", 'ok')
+            log(f"✅ ¡PUBLICADO! ID: {result['id']}", 'ok')
             return result['id']
         else:
-            error = result.get('error', {}).get('message', 'Error')
-            log(f"❌ Facebook: {error[:80]}", 'error')
+            error = result.get('error', {}).get('message', 'Error desconocido')
+            log(f"❌ Error Facebook: {error[:100]}", 'error')
             return None
             
-    except requests.Timeout:
-        log("⏰ Timeout subiendo a Facebook", 'error')
-        return None
     except Exception as e:
         log(f"❌ Error: {str(e)[:80]}", 'error')
         return None
 
 def limpiar():
-    """Limpieza rápida"""
+    """Limpia archivos temporales"""
     try:
         for f in TEMP_DIR.glob("*.mp4"):
             f.unlink(missing_ok=True)
@@ -209,49 +318,50 @@ def limpiar():
 
 def main():
     inicio = datetime.now()
-    log("="*50)
-    log("🎬 BOT VERDAD HOY - Iniciando")
+    log("="*60)
+    log("🎬 BOT VERDAD HOY v6.0 - Reddit + YouTube")
     log(f"⏰ {inicio.strftime('%H:%M:%S')}")
-    log("="*50)
+    log("="*60)
     
+    # Verificar configuración
     if not FB_ACCESS_TOKEN or not FB_PAGE_ID:
-        log("❌ Faltan credenciales", 'error')
+        log("❌ Faltan FB_ACCESS_TOKEN o FB_PAGE_ID", 'error')
         return False
     
     limpiar()
     
-    # 1. Buscar (máx 20s)
-    video = buscar_video_rapido()
+    # 1. Buscar video (Reddit primero, YouTube como respaldo)
+    video = buscar_video()
     if not video:
-        log("❌ No se encontró video", 'error')
+        log("❌ No se pudo encontrar ningún video", 'error')
         return False
     
-    # 2. Descargar (máx 60s)
-    video_path = descargar_video_rapido(video['id'])
+    # 2. Descargar
+    video_path = descargar_video(video)
     if not video_path:
-        log("❌ No se pudo descargar", 'error')
         return False
     
-    # 3. Generar texto (<1s)
-    texto = generar_texto(video['titulo'])
+    # 3. Generar texto
+    texto = generar_texto(video['titulo'], video['fuente'])
     
-    # 4. Publicar (máx 90s)
-    post_id = publicar_rapido(video_path, texto)
+    # 4. Publicar
+    post_id = publicar_facebook(video_path, texto)
     
     # 5. Limpiar
     limpiar()
     
     # Resumen
-    fin = datetime.now()
-    duracion = (fin - inicio).total_seconds()
-    log("="*50)
+    duracion = (datetime.now() - inicio).total_seconds()
+    log("="*60)
     
     if post_id:
-        log(f"✅ ÉXITO en {duracion:.0f} segundos")
-        log(f"📱 Post: {post_id}")
+        log(f"✅ ÉXITO en {duracion:.0f} segundos", 'ok')
+        log(f"📱 Post ID: {post_id}")
+        log(f"🎬 {video['titulo'][:50]}...")
+        log("="*60)
         return True
     else:
-        log(f"❌ Falló después de {duracion:.0f} segundos")
+        log(f"❌ Falló después de {duracion:.0f}s", 'error')
         return False
 
 if __name__ == "__main__":
@@ -259,4 +369,6 @@ if __name__ == "__main__":
         exit(0 if main() else 1)
     except Exception as e:
         log(f"💥 Error crítico: {e}", 'error')
+        import traceback
+        traceback.print_exc()
         exit(1)
