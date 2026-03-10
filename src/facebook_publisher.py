@@ -52,4 +52,18 @@ class FacebookPublisher:
             result = response.json()
             
             if response.status_code == 200 and 'id' in result:
-                video
+                video_id = result['id']
+                log(f"✅ Video publicado: {video_id}", 'exito')
+                return {
+                    'success': True,
+                    'video_id': video_id,
+                    'url': f"https://facebook.com/watch/?v={video_id}"
+                }
+            else:
+                error = result.get('error', {}).get('message', 'Error desconocido')
+                log(f"❌ Error Facebook: {error}", 'error')
+                return {'success': False, 'error': error}
+                
+        except Exception as e:
+            log(f"❌ Error subiendo video: {e}", 'error')
+            return {'success': False, 'error': str(e)}
