@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot de Reels - Verdad Hoy v5.0
-Busca y republica videos de noticias de YouTube a Facebook
+Bot de Reels - Verdad Hoy v5.1 (Optimizado)
+YouTube → Facebook con timeouts estrictos
 """
 
 import os
@@ -10,6 +10,7 @@ import sys
 import subprocess
 import random
 import re
+import signal
 from datetime import datetime
 from pathlib import Path
 
@@ -17,27 +18,25 @@ from pathlib import Path
 FB_ACCESS_TOKEN = os.getenv('FB_ACCESS_TOKEN')
 FB_PAGE_ID = os.getenv('FB_PAGE_ID')
 
-# Carpeta temporal para videos
 TEMP_DIR = Path('/tmp/videos_bot')
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-# Canales de YouTube de noticias (conflictos, política, actualidad)
+# Timeouts estrictos (segundos)
+TIMEOUT_BUSQUEDA = 20      # Máximo 20 segundos buscando
+TIMEOUT_DESCARGA = 60      # Máximo 60 segundos descargando
+TIMEOUT_PUBLICACION = 90   # Máximo 90 segundos publicando
+
+# Canales de YouTube simplificados (los más confiables)
 CANALES_NOTICIAS = [
     'UC16niRr50-MSBwiO3YDb3RA',  # BBC News
     'UCupvZG-5ko_eiXAupbDfxWw',  # CNN
     'UChqUTb7kYRX8-EiaN3XFrSQ',  # Reuters
-    'UCIvaYmXn910QMdemBG3v1pQ',  # Al Jazeera English
-    'UCQfwfsi5VrQ8yKZ-UWmAEFg',  # France 24 English
-    'UC4w_5ubHH91xYoqRxC9LAzw',  # DW News
-    'UCoMdktPbSTixAyNGwb-UYkQ',  # Sky News
-    'UCBi2mrWuNuyYy4gbM6fU18Q',  # ABC News
+    'UCQfwfsi5VrQ8yKZ-UWmAEFg',  # France 24
 ]
 
-# Palabras clave para filtrar contenido relevante
 PALABRAS_CLAVE = [
-    'war', 'ukraine', 'gaza', 'israel', 'conflict', 'military', 'attack',
-    'breaking', 'president', 'election', 'trump', 'biden', 'russia',
-    'crisis', 'protest', 'sanctions', 'nato', 'china', 'iran'
+    'war', 'ukraine', 'gaza', 'israel', 'conflict', 'military',
+    'breaking', 'trump', 'biden', 'russia', 'crisis', 'attack'
 ]
 
 def log(msg, tipo='info'):
@@ -45,166 +44,163 @@ def log(msg, tipo='info'):
     hora = datetime.now().strftime('%H:%M:%S')
     print(f"[{hora}] {iconos.get(tipo, 'ℹ️')} {msg}", flush=True)
 
-def buscar_video_youtube():
-    """Busca un video reciente de noticias en YouTube"""
-    log("🔍 Buscando video de noticias en YouTube...", 'yt')
+def ejecutar_comando(cmd, timeout, descripcion):
+    """Ejecuta comando con timeout estricto"""
+    log(f"⏱️ {descripcion} (max {timeout}s)...")
+    try:
+        result = subprocess.run(
+            cmd, 
+            capture_output=True, 
+            text=True, 
+            timeout=timeout
+        )
+        return result
+    except subprocess.TimeoutExpired:
+        log(f"⏰ Timeout en {descripcion}", 'error')
+        return None
+    except Exception as e:
+        log(f"❌ Error en {descripcion}: {str(e)[:60]}", 'error')
+        return None
+
+def buscar_video_rapido():
+    """Busca video con timeout estricto"""
+    log("🔍 Buscando video...", 'yt')
     
-    # Seleccionar canal aleatorio
     canal = random.choice(CANALES_NOTICIAS)
     
-    # Comando yt-dlp para listar videos recientes
+    # Comando simplificado y rápido
     cmd = [
         'yt-dlp',
         f'https://www.youtube.com/channel/{canal}/videos',
-        '--playlist-end', '10',  # Revisar últimos 10 videos
-        '--match-filter', 'duration < 300',  # Menos de 5 minutos
-        '--get-id', '--get-title', '--get-duration',
-        '--dateafter', 'now-2days',  # Solo últimos 2 días
-        '--quiet'
+        '--playlist-end', '5',
+        '--match-filter', 'duration < 180',  # Máximo 3 minutos
+        '--get-id', '--get-title',
+        '--dateafter', 'now-1day',  # Solo últimas 24 horas
+        '--quiet', '--no-warnings'
     ]
     
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        
-        if result.returncode != 0 or not result.stdout.strip():
-            log("No se encontraron videos recientes, probando otro canal...", 'warn')
-            return buscar_video_youtube()
-        
-        # Parsear resultados
-        lineas = result.stdout.strip().split('\n')
-        videos = []
-        
-        for i in range(0, len(lineas), 3):
-            if i+2 < len(lineas):
-                video_id = lineas[i].strip()
-                titulo = lineas[i+1].strip()
-                duracion = lineas[i+2].strip()
-                
-                # Verificar si es contenido relevante
-                titulo_lower = titulo.lower()
-                es_relevante = any(palabra in titulo_lower for palabra in PALABRAS_CLAVE)
-                
-                if es_relevante and len(video_id) == 11:  # ID válido de YouTube
-                    videos.append({
-                        'id': video_id,
-                        'titulo': titulo,
-                        'duracion': duracion,
-                        'url': f'https://youtube.com/watch?v={video_id}'
-                    })
-        
-        if not videos:
-            log("No se encontraron videos relevantes, probando otro canal...", 'warn')
-            return buscar_video_youtube()
-        
-        # Seleccionar el más relevante (primero de la lista)
-        video = videos[0]
-        log(f"✅ Video encontrado: {video['titulo'][:60]}...", 'ok')
-        return video
-        
-    except Exception as e:
-        log(f"Error buscando: {str(e)[:80]}", 'error')
+    result = ejecutar_comando(cmd, TIMEOUT_BUSQUEDA, "búsqueda YouTube")
+    
+    if not result or result.returncode != 0:
         return None
+    
+    lineas = result.stdout.strip().split('\n')
+    if len(lineas) < 2:
+        return None
+    
+    # Tomar el primer video encontrado (más reciente)
+    for i in range(0, min(len(lineas), 10), 2):
+        if i+1 >= len(lineas):
+            continue
+            
+        video_id = lineas[i].strip()
+        titulo = lineas[i+1].strip()
+        
+        # Verificar relevancia
+        titulo_lower = titulo.lower()
+        if any(palabra in titulo_lower for palabra in PALABRAS_CLAVE):
+            if len(video_id) == 11:
+                log(f"✅ Encontrado: {titulo[:50]}...", 'ok')
+                return {
+                    'id': video_id,
+                    'titulo': titulo,
+                    'url': f'https://youtube.com/watch?v={video_id}'
+                }
+    
+    log("⚠️ No encontrado relevante", 'warn')
+    return None
 
-def descargar_video(video_id):
-    """Descarga el video de YouTube"""
+def descargar_video_rapido(video_id):
+    """Descarga con formato optimizado"""
     url = f"https://youtube.com/watch?v={video_id}"
     output_path = TEMP_DIR / f"video_{video_id}.mp4"
     
-    log("⬇️ Descargando video...", 'yt')
+    # Eliminar si existe
+    output_path.unlink(missing_ok=True)
     
     cmd = [
         'yt-dlp',
-        '-f', 'best[height<=720][filesize<50M]/best[filesize<50M]',
-        '--max-filesize', '50M',
+        '-f', 'worst[height>=360][filesize<20M]/best[filesize<20M]',  # Más pequeño posible
+        '--max-filesize', '20M',
         '-o', str(output_path),
-        '--no-playlist',
-        '--quiet',
-        '--no-warnings',
+        '--no-playlist', '--quiet', '--no-warnings',
+        '--socket-timeout', '10',
+        '--retries', '1',
         url
     ]
     
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        
-        if result.returncode != 0:
-            log(f"Error descargando: {result.stderr[:100]}", 'error')
-            return None
-        
-        if output_path.exists():
-            size_mb = output_path.stat().st_size / (1024*1024)
+    result = ejecutar_comando(cmd, TIMEOUT_DESCARGA, "descarga")
+    
+    if result and result.returncode == 0 and output_path.exists():
+        size_mb = output_path.stat().st_size / (1024*1024)
+        if size_mb > 0.5:  # Mínimo 500KB
             log(f"✅ Descargado: {size_mb:.1f} MB", 'ok')
             return str(output_path)
-        
-        return None
-        
-    except Exception as e:
-        log(f"Error: {str(e)[:80]}", 'error')
-        return None
+    
+    return None
 
-def generar_texto(titulo_original):
-    """Genera texto atractivo para Facebook"""
-    # Limpiar título
-    titulo = re.sub(r'[^\w\s\-.,;:¡!¿?áéíóúÁÉÍÓÚñÑ]', '', titulo_original)
+def generar_texto(titulo):
+    """Texto rápido y efectivo"""
+    titulo_limpio = re.sub(r'[^\w\s\-.,;:¡!¿?áéíóúÁÉÍÓÚñÑ]', '', titulo)
+    if len(titulo_limpio) > 100:
+        titulo_limpio = titulo_limpio[:97] + "..."
     
-    if len(titulo) > 120:
-        titulo = titulo[:117] + "..."
+    intros = ["🚨 ÚLTIMA HORA", "📰 NOTICIA IMPORTANTE", "🌍 DESARROLLO"]
+    cierres = ["¿Qué opinas? 👇", "Comparte 📢", "¿Impactará? 🤔"]
     
-    intros = [
-        "🚨 ÚLTIMA HORA",
-        "📰 NOTICIA IMPORTANTE",
-        "🌍 DESARROLLO INTERNACIONAL",
-        "⚡ INFORMACIÓN RELEVANTE",
-    ]
-    
-    cierres = [
-        "¿Qué opinas? Déjanos tu comentario 👇",
-        "Comparte esta información 📢",
-        "¿Crees que esto afectará la situación? 🤔",
-    ]
-    
-    texto = f"""{random.choice(intros)}
+    return f"""{random.choice(intros)}
 
-{titulo}
+{titulo_limpio}
 
 {random.choice(cierres)}
 
-#Noticias #Actualidad #ÚltimaHora #VerdadHoy #NoticiasAlMinuto"""
-    
-    return texto[:1990]
+#Noticias #Actualidad #VerdadHoy"""
 
-def publicar_en_facebook(video_path, texto):
-    """Publica el video en la página de Facebook"""
-    log("📘 Publicando en Facebook...", 'fb')
+def publicar_rapido(video_path, texto):
+    """Publicación con timeout"""
+    log("📘 Publicando...", 'fb')
     
     import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    
+    # Configurar session con timeouts
+    session = requests.Session()
+    adapter = HTTPAdapter(max_retries=1)
+    session.mount('https://', adapter)
     
     url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/videos"
     
     try:
         with open(video_path, 'rb') as f:
             files = {'file': ('video.mp4', f, 'video/mp4')}
-            data = {
-                'description': texto,
-                'access_token': FB_ACCESS_TOKEN
-            }
+            data = {'description': texto, 'access_token': FB_ACCESS_TOKEN}
             
-            resp = requests.post(url, files=files, data=data, timeout=300)
+            resp = session.post(
+                url, 
+                files=files, 
+                data=data, 
+                timeout=TIMEOUT_PUBLICACION
+            )
             result = resp.json()
         
         if 'id' in result:
-            log(f"✅ ¡PUBLICADO! ID: {result['id']}", 'ok')
+            log(f"✅ Publicado: {result['id']}", 'ok')
             return result['id']
         else:
-            error = result.get('error', {}).get('message', 'Error desconocido')
-            log(f"❌ Error Facebook: {error[:100]}", 'error')
+            error = result.get('error', {}).get('message', 'Error')
+            log(f"❌ Facebook: {error[:80]}", 'error')
             return None
             
+    except requests.Timeout:
+        log("⏰ Timeout subiendo a Facebook", 'error')
+        return None
     except Exception as e:
         log(f"❌ Error: {str(e)[:80]}", 'error')
         return None
 
-def limpiar_temp():
-    """Limpia archivos temporales antiguos"""
+def limpiar():
+    """Limpieza rápida"""
     try:
         for f in TEMP_DIR.glob("*.mp4"):
             f.unlink(missing_ok=True)
@@ -212,52 +208,55 @@ def limpiar_temp():
         pass
 
 def main():
-    log("="*60)
-    log("🎬 BOT VERDAD HOY - YouTube → Facebook")
-    log(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log("="*60)
+    inicio = datetime.now()
+    log("="*50)
+    log("🎬 BOT VERDAD HOY - Iniciando")
+    log(f"⏰ {inicio.strftime('%H:%M:%S')}")
+    log("="*50)
     
-    # Verificar configuración
     if not FB_ACCESS_TOKEN or not FB_PAGE_ID:
-        log("❌ Faltan FB_ACCESS_TOKEN o FB_PAGE_ID", 'error')
+        log("❌ Faltan credenciales", 'error')
         return False
     
-    limpiar_temp()
+    limpiar()
     
-    # 1. Buscar video
-    video = buscar_video_youtube()
+    # 1. Buscar (máx 20s)
+    video = buscar_video_rapido()
     if not video:
-        log("❌ No se pudo encontrar video", 'error')
+        log("❌ No se encontró video", 'error')
         return False
     
-    # 2. Descargar
-    video_path = descargar_video(video['id'])
+    # 2. Descargar (máx 60s)
+    video_path = descargar_video_rapido(video['id'])
     if not video_path:
+        log("❌ No se pudo descargar", 'error')
         return False
     
-    # 3. Generar texto
+    # 3. Generar texto (<1s)
     texto = generar_texto(video['titulo'])
     
-    # 4. Publicar
-    post_id = publicar_en_facebook(video_path, texto)
+    # 4. Publicar (máx 90s)
+    post_id = publicar_rapido(video_path, texto)
     
     # 5. Limpiar
-    limpiar_temp()
+    limpiar()
+    
+    # Resumen
+    fin = datetime.now()
+    duracion = (fin - inicio).total_seconds()
+    log("="*50)
     
     if post_id:
-        log("="*60)
-        log("✅ ¡PROCESO COMPLETADO EXITOSAMENTE!")
-        log(f"📱 Post ID: {post_id}")
-        log("="*60)
+        log(f"✅ ÉXITO en {duracion:.0f} segundos")
+        log(f"📱 Post: {post_id}")
         return True
-    
-    return False
+    else:
+        log(f"❌ Falló después de {duracion:.0f} segundos")
+        return False
 
 if __name__ == "__main__":
     try:
         exit(0 if main() else 1)
     except Exception as e:
         log(f"💥 Error crítico: {e}", 'error')
-        import traceback
-        traceback.print_exc()
         exit(1)
