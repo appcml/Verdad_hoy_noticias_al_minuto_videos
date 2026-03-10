@@ -1,30 +1,36 @@
-name: Bot Reels - Publicar Videos
+name: Publicar Video Viral
 
 on:
-  schedule:
-    - cron: '0 */4 * * *'  # Cada 4 horas
   workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'URL del video de Facebook a republicar'
+        required: true
+        type: string
 
 jobs:
   publicar:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        
+    - name: Instalar dependencias
+      run: |
+        pip install -r requirements.txt
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        
+    - name: Crear directorios
+      run: mkdir -p data
       
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          
-      - name: Instalar dependencias
-        run: |
-          pip install -r requirements.txt
-          sudo apt-get update && sudo apt-get install -y ffmpeg curl
-          
-      - name: Ejecutar bot
-        env:
-          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-        run: python bot_reels.py  # ← Solo este archivo
+    - name: Descargar y publicar video
+      env:
+        FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+        FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+      run: python main_video.py "${{ github.event.inputs.video_url }}"  # ← AQUÍ ESTÁ EL CAMBIO
