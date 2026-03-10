@@ -1,40 +1,60 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot de Videos para Facebook - Verdad Hoy
-Versión OPTIMIZADA para GitHub Actions - Con timeouts estrictos
-Fuentes: NewsAPI + YouTube (con fallback a RSS)
+Bot de Republicación de Videos de Facebook - Verdad Hoy
+Monitorea páginas de noticias en FB, descarga videos y republica
 """
 
 import os
-import re
 import json
+import re
 import hashlib
-import random
 import time
-import signal
+import requests
 from datetime import datetime, timedelta
 from pathlib import Path
-import requests
-import feedparser  # Para RSS de noticias
-
-# Manejo de timeout global
-class TimeoutException(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TimeoutException("Operación excedió el tiempo límite")
-
-# Configurar timeout para todo el script (8 minutos max)
-signal.signal(signal.SIGALRM, timeout_handler)
+import subprocess
+import sys
 
 # =============================================================================
 # CONFIGURACIÓN
 # =============================================================================
 
-NEWS_API_KEY = os.getenv('NEWS_API_KEY')
-FB_PAGE_ID = os.getenv('FB_PAGE_ID')
 FB_ACCESS_TOKEN = os.getenv('FB_ACCESS_TOKEN')
+FB_PAGE_ID = os.getenv('FB_PAGE_ID')
+
+# Páginas de noticias a monitorear (IDs o nombres)
+PAGINAS_NOTICIAS = [
+    'bbcnews',           # BBC News
+    'cnn',               # CNN
+    'Reuters',           # Reuters
+    'AlJazeera',         # Al Jazeera
+    'france24english',   # France 24
+    'RTnews',            # RT
+    'cnnee',             # CNN Español
+    'deutschewellenews', # DW
+    'skynews',           # Sky News
+    'abcnews',           # ABC News
+    'nbcnews',           # NBC News
+    'cbsnews',           # CBS News
+    'politico',          # Politico
+    'axios',             # Axios
+    'bloombergtv',       # Bloomberg
+    'cnbc',              # CNBC
+    'financialtimes',    # FT
+    'wsj',               # Wall Street Journal
+    'economist',         # The Economist
+    'foreignpolicy',     # Foreign Policy
+]
+
+# Palabras clave para filtrar contenido relevante
+PALABRAS_CLAVE = [
+    'war', 'conflict', 'ukraine', 'gaza', 'israel', 'palestine', 'military',
+    'attack', 'invasion', 'sanctions', 'economy', 'inflation', 'recession',
+    'crisis', 'election', 'politics', 'government', 'biden', 'trump', 'putin',
+    'china', 'russia', 'usa', 'nato', 'eu', 'trade', 'market', 'stock',
+    'diplomacy', 'treaty', 'agreement', 'summit', 'protest', 'demonstration'
+]
 
 DATA_DIR = Path('data')
 VIDEOS_DIR = DATA_DIR / 'videos'
@@ -44,389 +64,471 @@ ESTADO_PATH = DATA_DIR / 'estado.json'
 DATA_DIR.mkdir(exist_ok=True)
 VIDEOS_DIR.mkdir(exist_ok=True)
 
-TIEMPO_ENTRE_PUBLICACIONES = 58
+TIEMPO_ENTRE_PUBLICACIONES = 58  # minutos
 
 # =============================================================================
-# UTILIDADES RÁPIDAS
+# UTILIDADES
 # =============================================================================
 
 def log(msg, tipo='info'):
-    iconos = {'info': 'ℹ️', 'ok': '✅', 'error': '❌', 'warn': '⚠️', 'video': '🎬'}
-    print(f"{iconos.get(tipo, 'ℹ️')} {msg}", flush=True)
+    iconos = {
+        'info': 'ℹ️', 'ok': '✅', 'error': '❌', 
+        'warn': '⚠️', 'video': '🎬', 'fb': '📘', 'news': '📰'
+    }
+    timestamp = datetime.now().strftime('%H:%M:%S')
+    print(f"[{timestamp}] {iconos.get(tipo, 'ℹ️')} {msg}", flush=True)
 
 def cargar_json(ruta, default=None):
     default = default or {}
     if ruta.exists():
         try:
-            return json.loads(ruta.read_text())
+            return json.loads(ruta.read_text(encoding='utf-8'))
         except:
             pass
     return default
 
 def guardar_json(ruta, datos):
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    ruta.write_text(json.dumps(datos, ensure_ascii=False, indent=2))
+    ruta.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding='utf-8')
 
 def generar_hash(texto):
-    return hashlib.md5(str(texto).lower().encode()).hexdigest()[:12]
+    return hashlib.md5(str(texto).encode()).hexdigest()[:16]
 
-def verificar_tiempo():
-    estado = cargar_json(ESTADO_PATH, {'ultima_publicacion': None})
-    if not estado.get('ultima_publicacion'):
-        return True, estado
-    try:
-        ultima = datetime.fromisoformat(estado['ultima_publicacion'])
-        return (datetime.now() - ultima).total_seconds() / 60 >= TIEMPO_ENTRE_PUBLICACIONES, estado
-    except:
-        return True, estado
+def contiene_palabras_clave(texto):
+    """Verifica si el texto contiene palabras clave relevantes"""
+    if not texto:
+        return False
+    texto_lower = texto.lower()
+    return any(palabra in texto_lower for palabra in PALABRAS_CLAVE)
+
+def limpiar_nombre_archivo(texto):
+    """Limpia texto para usar como nombre de archivo"""
+    texto = re.sub(r'[^\w\s-]', '', texto)
+    texto = re.sub(r'[-\s]+', '-', texto)
+    return texto[:50].strip('-')
 
 # =============================================================================
-# BÚSQUEDA RÁPIDA - NewsAPI (más confiable que scraping)
+# FACEBOOK API - OBTENER PUBLICACIONES
 # =============================================================================
 
-def buscar_noticias_newsapi(timeout=15):
-    """Busca noticias reales vía NewsAPI - Funciona en GitHub Actions"""
-    if not NEWS_API_KEY:
-        log("NEWS_API_KEY no configurado", 'error')
+def obtener_feed_pagina(page_id, limite=10):
+    """
+    Obtiene publicaciones recientes de una página de Facebook
+    """
+    if not FB_ACCESS_TOKEN:
+        log("Sin FB_ACCESS_TOKEN", 'error')
         return []
     
-    queries = ['war', 'conflict', 'military', 'ukraine', 'gaza', 'breaking']
-    query = random.choice(queries)
-    
-    url = "https://newsapi.org/v2/everything"
+    url = f"https://graph.facebook.com/v18.0/{page_id}/posts"
     params = {
-        'q': query,
-        'language': 'en',
-        'sortBy': 'publishedAt',
-        'pageSize': 10,
-        'from': (datetime.now() - timedelta(hours=24)).strftime('%Y-%m-%d'),
-        'apiKey': NEWS_API_KEY
+        'access_token': FB_ACCESS_TOKEN,
+        'fields': 'id,message,created_time,attachments{media_type,media,url,title,description},permalink_url,full_picture',
+        'limit': limite
     }
     
     try:
-        resp = requests.get(url, params=params, timeout=timeout)
+        resp = requests.get(url, params=params, timeout=30)
         data = resp.json()
         
-        if data.get('status') != 'ok':
-            log(f"NewsAPI error: {data.get('message', 'Unknown')}", 'error')
+        if 'error' in data:
+            error_msg = data['error'].get('message', 'Unknown')
+            if 'Page Public Content Access' in error_msg:
+                log(f"Página {page_id} requiere permisos especiales", 'warn')
+            else:
+                log(f"Error API {page_id}: {error_msg[:60]}", 'error')
             return []
         
-        noticias = []
-        for art in data.get('articles', [])[:5]:  # Máximo 5
-            if art.get('title') and len(art['title']) > 10:
-                noticias.append({
-                    'titulo': art['title'],
-                    'descripcion': art.get('description', ''),
-                    'url': art['url'],
-                    'fuente': art['source']['name'],
-                    'tipo': 'noticia'
+        publicaciones = []
+        for post in data.get('data', []):
+            post_id = post['id']
+            mensaje = post.get('message', '')
+            created_time = post.get('created_time')
+            permalink = post.get('permalink_url', '')
+            
+            # Buscar video en attachments
+            attachments = post.get('attachments', {}).get('data', [])
+            video_info = None
+            
+            for att in attachments:
+                media_type = att.get('media_type') or att.get('type', '')
+                
+                if 'video' in media_type.lower():
+                    media = att.get('media', {})
+                    video_url = media.get('source', '')  # URL directa del video
+                    
+                    if video_url:
+                        video_info = {
+                            'url': video_url,
+                            'titulo': att.get('title', ''),
+                            'descripcion': att.get('description', ''),
+                            'preview': post.get('full_picture', '')
+                        }
+                        break
+            
+            if video_info:
+                publicaciones.append({
+                    'id': post_id,
+                    'mensaje': mensaje,
+                    'fecha': created_time,
+                    'permalink': permalink,
+                    'video': video_info,
+                    'pagina_origen': page_id
                 })
         
-        log(f"NewsAPI: {len(noticias)} noticias", 'ok')
-        return noticias
+        return publicaciones
         
     except requests.Timeout:
-        log("Timeout NewsAPI", 'warn')
+        log(f"Timeout obteniendo {page_id}", 'warn')
         return []
     except Exception as e:
-        log(f"Error NewsAPI: {str(e)[:50]}", 'error')
+        log(f"Error {page_id}: {str(e)[:60]}", 'error')
         return []
 
+def buscar_videos_todas_paginas():
+    """Busca videos en todas las páginas configuradas"""
+    log("🔍 Buscando videos en páginas de noticias...", 'news')
+    todos_videos = []
+    
+    # Seleccionar páginas aleatorias para variedad (máximo 5 por ejecución)
+    paginas_sample = random.sample(PAGINAS_NOTICIAS, min(5, len(PAGINAS_NOTICIAS)))
+    
+    for pagina in paginas_sample:
+        log(f"Revisando {pagina}...", 'fb')
+        videos = obtener_feed_pagina(pagina, limite=5)
+        
+        # Filtrar por palabras clave
+        videos_relevantes = [v for v in videos if contiene_palabras_clave(v['mensaje'])]
+        
+        log(f"  {len(videos_relevantes)} videos relevantes", 'ok')
+        todos_videos.extend(videos_relevantes)
+        time.sleep(1)  # Respetar rate limits
+    
+    # Ordenar por fecha (más recientes primero)
+    todos_videos.sort(key=lambda x: x['fecha'], reverse=True)
+    
+    log(f"Total videos encontrados: {len(todos_videos)}", 'ok')
+    return todos_videos
+
 # =============================================================================
-# BÚSQUEDA RSS (Fallback si NewsAPI falla)
+# DESCARGA DE VIDEO
 # =============================================================================
 
-def buscar_noticias_rss(timeout=10):
-    """Backup usando feeds RSS - No requiere API key"""
-    feeds = [
-        'http://feeds.bbci.co.uk/news/world/rss.xml',
-        'http://rss.cnn.com/rss/edition_world.rss',
-        'https://www.reutersagency.com/feed/?taxonomy=markets&post_type=reuters-best',
+def descargar_video_fb(video_url, post_id, max_intentos=2):
+    """
+    Descarga video usando yt-dlp con manejo de errores
+    """
+    if not video_url:
+        log("Sin URL de video", 'error')
+        return None
+    
+    # Nombre único basado en post_id
+    video_hash = generar_hash(post_id)
+    output_template = VIDEOS_DIR / f"video_{video_hash}.%(ext)s"
+    
+    # Opciones para yt-dlp
+    opciones = [
+        'yt-dlp',
+        '--no-playlist',
+        '--format', 'best[height<=720][filesize<80M]/best[filesize<80M]/worst',
+        '--max-filesize', '80M',
+        '--output', str(output_template),
+        '--no-warnings',
+        '--quiet',
+        '--socket-timeout', '30',
+        '--retries', '2',
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        video_url
     ]
     
-    noticias = []
-    feed_url = random.choice(feeds)
-    
-    try:
-        signal.alarm(timeout)  # Timeout estricto
-        feed = feedparser.parse(feed_url)
-        signal.alarm(0)
-        
-        for entry in feed.entries[:5]:
-            if hasattr(entry, 'title') and len(entry.title) > 10:
-                noticias.append({
-                    'titulo': entry.title,
-                    'descripcion': entry.get('summary', '')[:200],
-                    'url': entry.link,
-                    'fuente': feed.feed.title if hasattr(feed.feed, 'title') else 'RSS',
-                    'tipo': 'noticia'
-                })
-        
-        log(f"RSS: {len(noticias)} noticias", 'ok')
-        return noticias
-        
-    except TimeoutException:
-        log("Timeout RSS", 'warn')
-        return []
-    except Exception as e:
-        log(f"Error RSS: {str(e)[:50]}", 'warn')
-        return []
-
-# =============================================================================
-# BÚSQUEDA YOUTUBE (con timeout muy estricto)
-# =============================================================================
-
-def buscar_video_youtube(query, timeout=20):
-    """
-    Busca video en YouTube con timeout estricto
-    Usa yt-dlp solo si está disponible, si no, retorna None rápido
-    """
-    try:
-        import yt_dlp
-    except ImportError:
-        log("yt-dlp no instalado", 'warn')
-        return None
-    
-    # Timeout para operaciones de red
-    ydl_opts = {
-        'quiet': True,
-        'no_warnings': True,
-        'extract_flat': True,
-        'socket_timeout': 10,  # 10 segundos max por operación
-        'retries': 1,
-    }
-    
-    search_url = f"ytsearch3:{query} video"  # Solo 3 resultados
-    
-    try:
-        signal.alarm(timeout)  # Timeout global
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            result = ydl.extract_info(search_url, download=False)
-        signal.alarm(0)
-        
-        if not result or 'entries' not in result:
-            return None
-        
-        for entry in result['entries']:
-            if not entry:
-                continue
-            duracion = entry.get('duration', 0)
-            # Videos entre 30s y 3 minutos
-            if 30 < duracion < 180:
-                return {
-                    'titulo': entry.get('title', ''),
-                    'url': entry.get('url', ''),
-                    'id': entry.get('id', ''),
-                    'duracion': duracion
-                }
-        return None
-        
-    except TimeoutException:
-        log("Timeout YouTube search", 'warn')
-        return None
-    except Exception as e:
-        log(f"YouTube error: {str(e)[:50]}", 'warn')
-        return None
-
-# =============================================================================
-# DESCARGA RÁPIDA DE VIDEO
-# =============================================================================
-
-def descargar_video_yt(url, video_id, timeout=60):
-    """Descarga video con timeout estricto"""
-    try:
-        import yt_dlp
-    except ImportError:
-        return None
-    
-    output_path = VIDEOS_DIR / f"vid_{video_id}.%(ext)s"
-    
-    ydl_opts = {
-        'format': 'worst[filesize<30M]/best[filesize<30M]',  # Archivos pequeños
-        'outtmpl': str(output_path),
-        'max_filesize': 30000000,
-        'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-        'socket_timeout': 15,
-        'retries': 2,
-    }
-    
-    try:
-        signal.alarm(timeout)
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            video_path = ydl.prepare_filename(info)
-        signal.alarm(0)
-        
-        # Verificar archivo
-        path = Path(video_path)
-        if not path.exists():
-            # Probar otras extensiones
-            for ext in ['.mp4', '.webm', '.mkv']:
-                alt = path.with_suffix(ext)
-                if alt.exists():
-                    path = alt
-                    break
-        
-        if path.exists() and path.stat().st_size > 1000000:  # Mínimo 1MB
-            size_mb = path.stat().st_size / (1024*1024)
-            log(f"Video: {size_mb:.1f}MB", 'ok')
-            return str(path)
-        return None
-        
-    except TimeoutException:
-        log("Timeout descarga", 'warn')
-        return None
-    except Exception as e:
-        log(f"Error descarga: {str(e)[:50]}", 'warn')
-        return None
-
-# =============================================================================
-# PUBLICACIÓN FACEBOOK
-# =============================================================================
-
-def publicar_fb(titulo, descripcion, video_path):
-    """Publica en Facebook"""
-    if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
-        log("Sin credenciales FB", 'error')
-        return False
-    
-    mensaje = f"🎬 {titulo}\n\n{descripcion[:150]}{'...' if len(descripcion) > 150 else ''}\n\n#Noticias #Actualidad #Video"
-    
-    try:
-        url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/videos"
-        with open(video_path, 'rb') as f:
-            resp = requests.post(
-                url,
-                files={'file': ('video.mp4', f, 'video/mp4')},
-                data={'description': mensaje[:1990], 'access_token': FB_ACCESS_TOKEN},
-                timeout=120
+    for intento in range(max_intentos):
+        try:
+            log(f"Descargando... (intento {intento + 1})", 'video')
+            
+            result = subprocess.run(
+                opciones,
+                capture_output=True,
+                text=True,
+                timeout=120  # 2 minutos máximo
             )
+            
+            if result.returncode != 0:
+                log(f"Error yt-dlp: {result.stderr[:100]}", 'warn')
+                continue
+            
+            # Buscar archivo descargado
+            archivos = list(VIDEOS_DIR.glob(f"video_{video_hash}.*"))
+            if archivos:
+                video_path = archivos[0]
+                size_mb = video_path.stat().st_size / (1024 * 1024)
+                
+                if size_mb < 1:  # Muy pequeño, probablemente error
+                    video_path.unlink()
+                    continue
+                
+                log(f"✓ Descargado: {size_mb:.1f} MB", 'ok')
+                return str(video_path)
+            
+        except subprocess.TimeoutExpired:
+            log("Timeout descargando video", 'warn')
+        except Exception as e:
+            log(f"Error descarga: {str(e)[:60]}", 'warn')
         
-        result = resp.json()
+        time.sleep(2)
+    
+    return None
+
+# =============================================================================
+# PROCESAMIENTO DE TEXTO
+# =============================================================================
+
+def generar_nuevo_texto(mensaje_original, fuente):
+    """
+    Genera nuevo texto para la publicación republicada
+    """
+    if not mensaje_original:
+        mensaje_original = "Video de actualidad internacional"
+    
+    # Limpiar mensaje original
+    texto = re.sub(r'http\S+', '', mensaje_original)  # Quitar URLs
+    texto = re.sub(r'#\w+', '', texto)  # Quitar hashtags
+    texto = re.sub(r'@\w+', '', texto)  # Quitar menciones
+    texto = re.sub(r'\s+', ' ', texto).strip()
+    
+    # Limitar longitud
+    if len(texto) > 200:
+        texto = texto[:197] + "..."
+    
+    # Plantillas de contexto según contenido
+    intros = [
+        "🚨 Desarrollo de última hora",
+        "📰 Información relevante del momento",
+        "🌍 Situación internacional en desarrollo",
+        "⚡ Acontecimiento importante",
+        "📢 Noticia de impacto global",
+    ]
+    
+    cierres = [
+        "¿Qué opinas sobre esto? Comparte tu perspectiva. 👇",
+        "Esto podría tener importantes consecuencias. ¿Qué crees? 🤔",
+        "Situación que está generando debate internacional. 💬",
+        "Desarrollo que hay que seguir de cerca. 📊",
+        "¿Crees que esto cambiará el panorama actual? 🌐",
+    ]
+    
+    intro = random.choice(intros)
+    cierre = random.choice(cierres)
+    
+    nuevo_texto = f"""{intro}
+
+{texto}
+
+Fuente: {fuente}
+
+{cierre}
+
+#Actualidad #Noticias #Internacional #VerdadHoy"""
+    
+    return nuevo_texto[:1990]  # Límite de Facebook
+
+# =============================================================================
+# PUBLICACIÓN EN FACEBOOK
+# =============================================================================
+
+def republicar_video(video_path, texto):
+    """
+    Sube el video a tu página de Facebook
+    """
+    if not FB_ACCESS_TOKEN or not FB_PAGE_ID:
+        log("Faltan credenciales de Facebook", 'error')
+        return None
+    
+    url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/videos"
+    
+    try:
+        with open(video_path, 'rb') as f:
+            files = {'file': ('video.mp4', f, 'video/mp4')}
+            data = {
+                'description': texto,
+                'access_token': FB_ACCESS_TOKEN
+            }
+            
+            log("Subiendo a Facebook...", 'fb')
+            resp = requests.post(url, files=files, data=data, timeout=300)
+            result = resp.json()
+        
         if 'id' in result:
-            log(f"Publicado: {result['id']}", 'ok')
-            return result['id']
+            video_id = result['id']
+            log(f"✓ Republicado ID: {video_id}", 'ok')
+            return video_id
         else:
-            log(f"FB error: {result.get('error', {}).get('message', 'Unknown')[:50]}", 'error')
-            return False
+            error = result.get('error', {}).get('message', 'Error desconocido')
+            log(f"Error FB: {error[:80]}", 'error')
+            return None
             
     except Exception as e:
-        log(f"Error FB: {str(e)[:50]}", 'error')
-        return False
+        log(f"Error publicando: {str(e)[:60]}", 'error')
+        return None
 
 # =============================================================================
-# HISTORIAL
+# CONTROL Y HISTORIAL
 # =============================================================================
 
 def cargar_historial():
-    return cargar_json(HISTORIAL_PATH, {'hashes': [], 'videos': []})
-
-def ya_publicado(historial, titulo):
-    h = generar_hash(titulo)
-    return h in historial.get('hashes', [])
-
-def guardar_historial(historial, titulo, url, post_id):
-    h = generar_hash(titulo)
-    historial['hashes'].append(h)
-    historial['videos'].append({
-        'titulo': titulo[:100],
-        'url': url,
-        'post_id': post_id,
-        'fecha': datetime.now().isoformat()
+    return cargar_json(HISTORIAL_PATH, {
+        'publicados': [],      # IDs de posts ya usados
+        'hashes': [],          # Hashes de contenido
+        'ultima_publicacion': None
     })
-    historial['hashes'] = historial['hashes'][-100:]
-    historial['videos'] = historial['videos'][-50:]
+
+def ya_publicado(historial, post_id):
+    """Verifica si ya republicamos este post"""
+    return post_id in historial.get('publicados', [])
+
+def guardar_registro(historial, post_original, nuevo_post_id):
+    """Guarda registro de la republicación"""
+    historial['publicados'].append(post_original['id'])
+    historial['hashes'].append(generar_hash(post_original['id']))
+    historial.setdefault('registros', []).append({
+        'id_original': post_original['id'],
+        'pagina_origen': post_original['pagina_origen'],
+        'fecha_original': post_original['fecha'],
+        'id_nuevo': nuevo_post_id,
+        'fecha_republicacion': datetime.now().isoformat(),
+        'titulo': post_original['mensaje'][:100] if post_original['mensaje'] else 'Sin título'
+    })
+    
+    # Mantener solo últimos 100
+    for key in ['publicados', 'hashes']:
+        historial[key] = historial[key][-100:]
+    historial['registros'] = historial['registros'][-50:]
+    
     guardar_json(HISTORIAL_PATH, historial)
 
+def verificar_tiempo_publicacion():
+    """Verifica si ha pasado el tiempo mínimo entre publicaciones"""
+    estado = cargar_json(ESTADO_PATH, {'ultima_publicacion': None})
+    
+    if not estado.get('ultima_publicacion'):
+        return True, estado
+    
+    try:
+        ultima = datetime.fromisoformat(estado['ultima_publicacion'])
+        minutos = (datetime.now() - ultima).total_seconds() / 60
+        return minutos >= TIEMPO_ENTRE_PUBLICACIONES, estado
+    except:
+        return True, estado
+
+def limpiar_videos_antiguos(max_edad_horas=24):
+    """Elimina videos temporales antiguos"""
+    try:
+        ahora = datetime.now()
+        for archivo in VIDEOS_DIR.glob('video_*'):
+            if archivo.is_file():
+                stats = archivo.stat()
+                edad = ahora - datetime.fromtimestamp(stats.st_mtime)
+                if edad > timedelta(hours=max_edad_horas):
+                    archivo.unlink()
+        log("Limpieza de videos antiguos completada", 'info')
+    except Exception as e:
+        log(f"Error limpiando: {e}", 'warn')
+
 # =============================================================================
-# MAIN - EJECUCIÓN RÁPIDA
+# FLUJO PRINCIPAL
 # =============================================================================
 
 def main():
-    # Timeout global de 7 minutos para todo el script
-    signal.alarm(420)  # 7 minutos
+    inicio = time.time()
     
-    print("\n" + "="*60)
-    print("🎬 BOT VIDEOS - VERSIÓN RÁPIDA")
+    print("\n" + "="*70)
+    print("🎬 BOT DE REPUBLICACIÓN FB - VERDAD HOY")
     print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("="*60)
-    
-    start_time = time.time()
+    print("="*70)
     
     # 1. Verificar tiempo entre publicaciones
-    puede, estado = verificar_tiempo()
+    puede, estado = verificar_tiempo_publicacion()
     if not puede:
-        log("Esperando intervalo de 58 minutos...", 'warn')
+        log("⏳ Deben pasar 58 minutos entre publicaciones", 'warn')
         return True
     
     # 2. Cargar historial
     historial = cargar_historial()
-    log(f"Historial: {len(historial.get('videos', []))} videos")
+    log(f"Historial: {len(historial.get('publicados', []))} videos ya republicados")
     
-    # 3. Buscar noticias (NewsAPI primero, RSS si falla)
-    noticias = buscar_noticias_newsapi(timeout=15)
-    if not noticias:
-        log("Intentando RSS...", 'info')
-        noticias = buscar_noticias_rss(timeout=10)
-    
-    if not noticias:
-        log("No se encontraron noticias", 'error')
+    # 3. Buscar videos en páginas de noticias
+    videos = buscar_videos_todas_paginas()
+    if not videos:
+        log("No se encontraron videos relevantes", 'warn')
         return False
     
-    log(f"Procesando {len(noticias)} noticias...")
+    # 4. Filtrar ya publicados
+    videos_nuevos = [v for v in videos if not ya_publicado(historial, v['id'])]
+    log(f"Videos nuevos: {len(videos_nuevos)}")
     
-    # 4. Para cada noticia, buscar video y publicar
-    for noticia in noticias[:3]:  # Máximo 3 intentos
-        if ya_publicado(historial, noticia['titulo']):
-            continue
-        
-        log(f"\n📰 {noticia['titulo'][:50]}...")
-        
-        # Buscar video relacionado
-        video = buscar_video_youtube(noticia['titulo'], timeout=20)
-        if not video:
-            continue
-        
-        log(f"🎬 {video['titulo'][:50]}...")
+    if not videos_nuevos:
+        log("No hay videos nuevos para republicar", 'info')
+        return True
+    
+    # 5. Intentar republicar el primero que funcione
+    for video in videos_nuevos[:3]:  # Máximo 3 intentos
+        log(f"\n🎬 Procesando video de {video['pagina_origen']}...")
         
         # Descargar
-        video_path = descargar_video_yt(video['url'], video['id'], timeout=60)
+        video_path = descargar_video_fb(
+            video['video']['url'], 
+            video['id']
+        )
+        
         if not video_path:
+            log("No se pudo descargar, siguiente...", 'warn')
             continue
         
-        # Publicar
-        post_id = publicar_fb(noticia['titulo'], noticia['descripcion'], video_path)
+        # Generar texto
+        nuevo_texto = generar_nuevo_texto(
+            video['mensaje'], 
+            video['pagina_origen']
+        )
         
-        # Limpiar
+        # Republicar
+        nuevo_id = republicar_video(video_path, nuevo_texto)
+        
+        # Limpiar archivo temporal
         try:
             Path(video_path).unlink()
         except:
             pass
         
-        if post_id:
-            guardar_historial(historial, noticia['titulo'], video['url'], post_id)
+        if nuevo_id:
+            # Guardar registro
+            guardar_registro(historial, video, nuevo_id)
+            
+            # Actualizar estado
             estado['ultima_publicacion'] = datetime.now().isoformat()
             guardar_json(ESTADO_PATH, estado)
             
-            elapsed = time.time() - start_time
-            print("\n" + "="*60)
-            log("✅ ÉXITO - Video publicado")
-            print(f"⏱️  Tiempo total: {elapsed:.0f} segundos")
-            print(f"📰 {noticia['titulo'][:60]}")
-            print("="*60)
+            # Limpiar videos antiguos
+            limpiar_videos_antiguos()
+            
+            tiempo_total = time.time() - inicio
+            print("\n" + "="*70)
+            log("✅ REPUBLICACIÓN EXITOSA")
+            print(f"⏱️ Tiempo: {tiempo_total:.0f} segundos")
+            print(f"📰 Origen: {video['pagina_origen']}")
+            print(f"🔗 Post original: {video['permalink']}")
+            print(f"📤 Nuevo post ID: {nuevo_id}")
+            print("="*70)
             return True
+        
+        log("Falló la publicación, intentando siguiente...", 'warn')
     
-    log("No se pudo publicar ningún video", 'error')
+    log("No se pudo republicar ningún video", 'error')
     return False
 
 if __name__ == "__main__":
     try:
         exit(0 if main() else 1)
-    except TimeoutException:
-        log("⏱️ Script excedió tiempo máximo (7 min)", 'error')
-        exit(1)
+    except KeyboardInterrupt:
+        log("Detenido por usuario", 'warn')
+        exit(0)
     except Exception as e:
         log(f"Error crítico: {e}", 'error')
         import traceback
