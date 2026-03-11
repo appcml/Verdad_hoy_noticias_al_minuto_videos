@@ -2,7 +2,7 @@ name: Bot de Noticias - Publicación Automática
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Cada 1 hora (en el minuto 0 de cada hora)
+    - cron: '0 * * * *'  # Cada 1 hora
   workflow_dispatch:  # Permite ejecución manual
 
 jobs:
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4  # <-- Actualizado a v4
     
     - name: Setup Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5  # <-- Actualizado a v5
       with:
         python-version: '3.10'
     
@@ -29,7 +29,7 @@ jobs:
         mkdir -p data
     
     - name: Descargar base de datos anterior
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4  # <-- CAMBIADO: v3 -> v4
       with:
         name: videos-db
         path: data/
@@ -43,7 +43,7 @@ jobs:
       run: python bot.py
     
     - name: Guardar base de datos
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4  # <-- CAMBIADO: v3 -> v4
       with:
         name: videos-db
         path: data/videos.db
