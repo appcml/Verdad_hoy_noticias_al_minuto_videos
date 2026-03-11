@@ -28,21 +28,33 @@ jobs:
         mkdir -p temp
         mkdir -p data
     
-    - name: Descargar base de datos anterior
-      id: download-db
-      uses: actions/download-artifact@v4
-      with:
-        name: videos-db
-        path: data/
+    - name: Listar artifacts disponibles
+      id: list-artifacts
+      run: |
+        echo "Artifacts disponibles:"
+        gh api repos/${{ github.repository }}/actions/artifacts --jq '.artifacts[].name' || echo "No se pudieron listar artifacts"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       continue-on-error: true
     
-    - name: Verificar si existe base de datos
+    - name: Descargar base de datos anterior (si existe)
+      id: download-db
+      run: |
+        # Intentar descargar con gh CLI en lugar de la action
+        gh run download --name videos-db --dir data/ || echo "No se encontró artifact videos-db, se creará nueva base de datos"
+        ls -la data/ || echo "Directorio data vacío"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
+    
+    - name: Verificar base de datos
       run: |
         if [ -f "data/videos.db" ]; then
-          echo "Base de datos encontrada"
+          echo "✓ Base de datos encontrada"
+          ls -lh data/videos.db
         else
-          echo "Base de datos no encontrada, se creará nueva"
-          touch data/videos.db
+          echo "✗ Base de datos no encontrada, inicializando..."
+          # La base de datos se creará automáticamente cuando el bot se ejecute
         fi
     
     - name: Ejecutar bot
@@ -52,13 +64,23 @@ jobs:
         FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
       run: python bot.py
     
+    - name: Verificar si se creó base de datos
+      run: |
+        if [ -f "data/videos.db" ]; then
+          echo "✓ Base de datos lista para guardar"
+          ls -lh data/videos.db
+        else
+          echo "✗ No se creó base de datos"
+          exit 1
+        fi
+    
     - name: Guardar base de datos
       uses: actions/upload-artifact@v4
       with:
         name: videos-db
         path: data/videos.db
         retention-days: 30
-        if-no-files-found: warn
+        if-no-files-found: error
     
     - name: Limpiar archivos temporales
       run: rm -rf temp/*
