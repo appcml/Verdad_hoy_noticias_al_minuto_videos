@@ -1,13 +1,11 @@
 name: Bot Verdad Hoy - Automatico
 
 on:
-  schedule:
-    - cron: '0 * * * *'  # Cada 60 minutos
   workflow_dispatch:
     inputs:
       urls:
-        description: 'URLs de videos (una por línea, máx 15)'
-        required: false
+        description: 'URLs de videos (una por línea)'
+        required: true
         type: string
 
 jobs:
@@ -25,114 +23,73 @@ jobs:
     - name: Instalar dependencias
       run: |
         pip install -r requirements.txt
-        sudo apt-get update
         sudo apt-get install -y ffmpeg
         
     - name: Crear directorios
-      run: mkdir -p data && ls -la data/
+      run: mkdir -p data
       
-    - name: Cargar cola anterior
-      uses: actions/download-artifact@v4
-      with:
-        name: cola-videos
-        path: data/
-      continue-on-error: true
+    - name: PRUEBA - Verificar archivos Python
+      run: |
+        echo "=== Archivos en src/ ==="
+        ls -la src/
+        echo ""
+        echo "=== Contenido de __init__.py ==="
+        cat src/__init__.py 2>/dev/null || echo "NO EXISTE __init__.py"
+        echo ""
+        echo "=== Probando import ==="
+        python -c "import sys; sys.path.insert(0, '.'); from src.cola_processor import ProcesadorCola; print('Import OK')"
       
-    - name: Verificar archivos existentes
-      run: ls -la data/ || echo "No hay archivos en data/"
-      
-    - name: Agregar URLs a cola
-      if: github.event.inputs.urls != ''
+    - name: Agregar y procesar URLs
       env:
         FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
         FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
       run: |
-        echo "=== URLs recibidas ==="
-        echo '${{ github.event.inputs.urls }}'
-        echo "======================"
-        
-        python << 'PYTHON_EOF'
+        python << 'EOF'
         import sys
         sys.path.insert(0, '.')
-        from src.cola_processor import ProcesadorCola
+        
+        print("Importando módulos...")
+        try:
+            from src.cola_processor import ProcesadorCola
+            from src.utils import log
+            print("✓ Import exitoso")
+        except Exception as e:
+            print(f"✗ Error import: {e}")
+            import traceback
+            traceback.print_exc()
+            sys.exit(1)
         
         urls_text = """${{ github.event.inputs.urls }}"""
-        procesador = ProcesadorCola()
-        
         urls = [u.strip() for u in urls_text.strip().split('\n') if u.strip()]
-        print(f"Total URLs detectadas: {len(urls)}")
+        print(f"URLs detectadas: {len(urls)}")
         
-        agregados = 0
-        for i, url in enumerate(urls[:15], 1):
-            print(f"[{i}/15] Intentando agregar: {url[:60]}...")
-            try:
-                if procesador.agregar_a_cola(url, 'usuario'):
-                    agregados += 1
-                    print(f"  ✓ Agregado exitosamente")
-                else:
-                    print(f"  ✗ Ya existe o error")
-            except Exception as e:
-                print(f"  ✗ Error: {e}")
-        
-        print(f"\n>>> RESUMEN: {agregados}/{len(urls)} URLs agregadas")
-        PYTHON_EOF
-      
-    - name: Verificar cola antes de procesar
-      run: |
-        cat data/cola_videos.json 2>/dev/null || echo "No existe cola_videos.json"
-      
-    - name: Procesar cola (máx 15 videos)
-      env:
-        FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-        FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-      run: |
-        python << 'PYTHON_EOF'
-        import sys
-        sys.path.insert(0, '.')
-        from src.cola_processor import ProcesadorCola
+        if not urls:
+            print("ERROR: No hay URLs")
+            sys.exit(1)
         
         procesador = ProcesadorCola()
-        print("Iniciando procesamiento de cola...")
         
-        procesados = 0
-        fallidos = 0
-        max_intentos = 15
+        # Agregar
+        for url in urls[:15]:
+            print(f"Agregando: {url[:50]}...")
+            try:
+                procesador.agregar_a_cola(url, 'usuario')
+            except Exception as e:
+                print(f"Error agregando: {e}")
         
-        while procesados < max_intentos:
-            print(f"\n--- Intento {procesados + fallidos + 1} ---")
+        # Procesar
+        print("\nProcesando...")
+        for i in range(15):
             try:
                 success, estado = procesador.procesar_siguiente()
-                print(f"Estado: {estado}")
-                
+                print(f"[{i+1}] Estado: {estado}, Success: {success}")
                 if estado == 'cola_vacia':
-                    print(">>> Cola vacía, terminando")
                     break
-                if success:
-                    procesados += 1
-                    print(f"✓ Video {procesados} procesado exitosamente")
-                else:
-                    fallidos += 1
-                    print(f"✗ Fallo en procesamiento (total fallidos: {fallidos})")
-                    
             except Exception as e:
-                print(f"✗ ERROR CRÍTICO: {e}")
+                print(f"Error procesando: {e}")
                 import traceback
                 traceback.print_exc()
-                fallidos += 1
+                break
         
-        print(f"\n>>> RESUMEN FINAL:")
-        print(f"    Procesados exitosamente: {procesados}")
-        print(f"    Fallidos: {fallidos}")
-        PYTHON_EOF
-      
-    - name: Verificar historial
-      run: |
-        cat data/historial_videos.json 2>/dev/null || echo "No existe historial"
-        ls -la data/
-      
-    - name: Guardar cola
-      uses: actions/upload-artifact@v4
-      with:
-        name: cola-videos
-        path: data/
-        retention-days: 7
+        print("Terminado")
+        EOF
