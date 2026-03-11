@@ -1,104 +1,86 @@
 import os
-from dotenv import load_dotenv
-from datetime import datetime, timedelta
-from src.scraper import ShortsScraper
-from src.downloader import ShortsDownloader
-from src.redactor import ContentRedactor
-from src.publisher import FacebookPublisher
-from src.database import VideosDB
+import sys
+from datetime import datetime
 
-load_dotenv()
+# Verificar variables de entorno
+print(f"=== Verificando configuración ===")
+print(f"Fecha: {datetime.now()}")
+
+required_vars = ['YOUTUBE_API_KEY', 'FB_PAGE_ID', 'FB_ACCESS_TOKEN']
+missing = [v for v in required_vars if not os.getenv(v)]
+if missing:
+    print(f"ERROR: Faltan variables: {missing}")
+    sys.exit(1)
+
+print("✓ Todas las variables de entorno configuradas")
+
+# Importar módulos
+try:
+    from src.scraper import ShortsScraper
+    from src.downloader import ShortsDownloader
+    from src.redactor import ContentRedactor
+    from src.publisher import FacebookPublisher
+    print("✓ Módulos importados correctamente")
+except ImportError as e:
+    print(f"ERROR importando módulos: {e}")
+    sys.exit(1)
 
 def main():
-    print(f"🚀 Iniciando bot - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Inicializar
+    print("\n=== FASE 1: BUSCAR SHORTS ===")
     scraper = ShortsScraper(os.getenv('YOUTUBE_API_KEY'))
+    shorts = scraper.buscar_shorts_noticias(max_results=3)
+    print(f"Encontrados: {len(shorts)} shorts")
+    
+    if not shorts:
+        print("No se encontraron shorts, terminando")
+        return
+    
+    for i, s in enumerate(shorts, 1):
+        print(f"  {i}. {s['titulo'][:60]}...")
+    
+    print("\n=== FASE 2: DESCARGAR ===")
     downloader = ShortsDownloader()
+    
+    descargados = []
+    for short in shorts:
+        print(f"Descargando {short['video_id']}...")
+        archivo = downloader.descargar_short(short)
+        if archivo:
+            descargados.append({**short, 'archivo': archivo})
+            print(f"  ✓ Descargado: {archivo}")
+        else:
+            print(f"  ✗ Falló descarga")
+    
+    if not descargados:
+        print("No se descargó ningún video, terminando")
+        return
+    
+    print("\n=== FASE 3: PUBLICAR ===")
     redactor = ContentRedactor()
     publisher = FacebookPublisher(
         os.getenv('FB_PAGE_ID'),
         os.getenv('FB_ACCESS_TOKEN')
     )
-    db = VideosDB()
     
-    # === FASE 1: BUSCAR Y DESCARGAR ===
-    print("\n🔍 FASE 1: Buscando Shorts relevantes...")
+    # Publicar solo el primero
+    video = descargados[0]
+    print(f"Procesando: {video['titulo'][:50]}...")
     
-    # Buscar cada hora, pero solo videos de última hora
-    shorts = scraper.buscar_shorts_noticias(max_results=10)
-    print(f"   Encontrados: {len(shorts)} nuevos Shorts")
+    contenido = redactor.reescribir(video['titulo'], 'general')
+    print(f"Título nuevo: {contenido['titulo_nuevo'][:50]}...")
     
-    descargados_hoy = 0
-    for short in shorts:
-        # Verificar si ya existe
-        if db.existe_video(short['video_id']):
-            continue
-            
-        archivo = downloader.descargar_short(short)
-        if archivo:
-            db.guardar_descargado(short)
-            descargados_hoy += 1
-            print(f"   ✓ Descargado: {short['video_id']}")
+    resultado = publisher.publicar_video(video['archivo'], contenido)
     
-    print(f"   Total nuevos descargados: {descargados_hoy}")
-    
-    # === FASE 2: PUBLICAR (1 por hora) ===
-    print("\n📤 FASE 2: Publicando en Facebook...")
-    
-    # Obtener el video más reciente pendiente
-    video = db.obtener_siguiente_pendiente()
-    
-    if not video:
-        print("   ℹ️ No hay videos pendientes para publicar")
-        return
-    
-    # Verificar que no se haya publicado hace poco (anti-spam)
-    ultima_publicacion = db.obtener_ultima_publicacion()
-    if ultima_publicacion:
-        minutos_desde_ultima = (datetime.now() - ultima_publicacion).total_seconds() / 60
-        if minutos_desde_ultima < 45:  # Mínimo 45 minutos entre publicaciones
-            print(f"   ⏱️ Esperando... Última publicación hace {int(minutos_desde_ultima)} minutos")
-            return
-    
-    # Reescribir contenido
-    print(f"   Procesando: {video['titulo_original'][:60]}...")
-    contenido = redactor.reescribir(video['titulo_original'], 'general')
-    
-    # Publicar
-    resultado = publisher.publicar_video(video['archivo_local'], contenido)
-    
-    if resultado['success']:
-        db.marcar_publicado(video['video_id'], resultado['post_id'])
-        print(f"   ✅ PUBLICADO: {contenido['titulo_nuevo'][:50]}...")
-        print(f"   🔗 URL: {resultado['permalink']}")
+    if resultado.get('success'):
+        print(f"✓ PUBLICADO: {resultado.get('permalink', 'OK')}")
     else:
-        print(f"   ❌ ERROR: {resultado['error']}")
-        db.marcar_error(video['video_id'], resultado['error'])
+        print(f"✗ ERROR: {resultado.get('error', 'Desconocido')}")
     
-    # === FASE 3: LIMPIEZA ===
-    print("\n🧹 FASE 3: Limpieza...")
+    print("\n=== LIMPIEZA ===")
+    eliminados = downloader.limpiar_antiguos(horas_max=0)  # Limpiar todo
+    print(f"Eliminados: {len(eliminados)} archivos")
     
-    # Limpiar archivos locales de videos ya publicados
-    publicados = db.obtener_publicados_antiguos(horas=2)
-    for vid in publicados:
-        if vid['archivo_local'] and os.path.exists(vid['archivo_local']):
-            os.remove(vid['archivo_local'])
-            db.limpiar_archivo_local(vid['video_id'])
-            print(f"   🗑️ Eliminado local: {vid['video_id']}")
-    
-    # Limpiar archivos huérfanos (más de 24h)
-    eliminados = downloader.limpiar_antiguos(horas_max=24)
-    print(f"   Archivos huérfanos eliminados: {len(eliminados)}")
-    
-    # === REPORTE ===
-    print("\n📊 REPORTE:")
-    stats = db.obtener_estadisticas()
-    for estado, cantidad in stats.items():
-        print(f"   {estado}: {cantidad}")
-    
-    pendientes = db.contar_pendientes()
-    print(f"   🕐 Videos en cola: {pendientes}")
+    print("\n=== COMPLETADO ===")
 
 if __name__ == "__main__":
     main()
