@@ -15,22 +15,33 @@ def main():
     
     procesador = ProcesadorCola()
     
-    # Si hay URL como argumento, agregar a cola
-    if len(sys.argv) > 1:
-        url = sys.argv[1]
-        log(f"Agregando: {url[:60]}...", 'info')
-        procesador.agregar_a_cola(url, "usuario")
+    # Agregar URLs de argumentos
+    urls = sys.argv[1:]
+    if urls:
+        log(f"Agregando {len(urls)} URLs...", 'info')
+        agregados = 0
+        for url in urls[:15]:  # Máximo 15
+            if procesador.agregar_a_cola(url, "usuario"):
+                agregados += 1
+        log(f"Agregados: {agregados}", 'exito')
     
-    # Procesar cola
+    # Procesar cola (máximo 15)
     log("Procesando videos...", 'info')
-    cantidad = procesador.procesar_todos()
+    cantidad = 0
+    while cantidad < 15:
+        success, estado = procesador.procesar_siguiente()
+        if estado == "cola_vacia":
+            break
+        if success:
+            cantidad += 1
     
     log(f"Videos procesados: {cantidad}", 'exito' if cantidad > 0 else 'advertencia')
-    return cantidad > 0
+    return True
 
 if __name__ == "__main__":
     try:
-        exit(0 if main() else 0)  # 0 = OK, no es error si no hay videos
+        main()
+        exit(0)
     except Exception as e:
         log(f"Error: {e}", 'error')
         import traceback
