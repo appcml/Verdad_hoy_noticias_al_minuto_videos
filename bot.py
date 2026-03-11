@@ -1,132 +1,233 @@
+#!/usr/bin/env python3
 import os
 import sys
-import traceback
+import re
+import random
+import requests
+import subprocess
 from datetime import datetime
 
-print(f"=== INICIO {datetime.now()} ===")
+# ============================================
+# CONFIGURACIÓN
+# ============================================
+YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
+FB_PAGE_ID = os.getenv('FB_PAGE_ID')
+FB_ACCESS_TOKEN = os.getenv('FB_ACCESS_TOKEN')
 
-# Paso 1: Variables de entorno
-print("\n1. Verificando variables...")
-try:
-    yt_key = os.getenv('YOUTUBE_API_KEY')
-    fb_page = os.getenv('FB_PAGE_ID')
-    fb_token = os.getenv('FB_ACCESS_TOKEN')
-    
-    print(f"   YOUTUBE_API_KEY: {'✓' if yt_key else '✗'} ({len(yt_key) if yt_key else 0} chars)")
-    print(f"   FB_PAGE_ID: {'✓' if fb_page else '✗'}")
-    print(f"   FB_ACCESS_TOKEN: {'✓' if fb_token else '✗'} ({len(fb_token) if fb_token else 0} chars)")
-    
-    if not all([yt_key, fb_page, fb_token]):
-        print("ERROR: Faltan variables de entorno")
-        sys.exit(1)
-except Exception as e:
-    print(f"ERROR en variables: {e}")
-    traceback.print_exc()
+print(f"=== BOT DE NOTICIAS {datetime.now()} ===")
+print(f"YouTube API: {'OK' if YOUTUBE_API_KEY else 'FALTA'}")
+print(f"Facebook Page: {'OK' if FB_PAGE_ID else 'FALTA'}")
+print(f"Facebook Token: {'OK' if FB_ACCESS_TOKEN else 'FALTA'}")
+
+if not all([YOUTUBE_API_KEY, FB_PAGE_ID, FB_ACCESS_TOKEN]):
+    print("ERROR: Faltan variables de entorno")
     sys.exit(1)
 
-# Paso 2: Importar módulos
-print("\n2. Importando módulos...")
-try:
-    print("   - Intentando importar src.scraper...")
-    from src.scraper import ShortsScraper
-    print("     ✓ scraper importado")
-    
-    print("   - Intentando importar src.downloader...")
-    from src.downloader import ShortsDownloader
-    print("     ✓ downloader importado")
-    
-    print("   - Intentando importar src.redactor...")
-    from src.redactor import ContentRedactor
-    print("     ✓ redactor importado")
-    
-    print("   - Intentando importar src.publisher...")
-    from src.publisher import FacebookPublisher
-    print("     ✓ publisher importado")
-    
-except Exception as e:
-    print(f"ERROR importando: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+# ============================================
+# FUNCIONES
+# ============================================
 
-# Paso 3: Crear instancias
-print("\n3. Creando instancias...")
-try:
-    print("   - Creando scraper...")
-    scraper = ShortsScraper(yt_key)
-    print("     ✓ scraper creado")
+def buscar_shorts():
+    """Busca shorts de noticias en YouTube"""
+    print("\n--- Buscando shorts ---")
     
-    print("   - Creando downloader...")
-    downloader = ShortsDownloader()
-    print("     ✓ downloader creado")
+    queries = [
+        "noticias urgentes hoy",
+        "ultima hora internacional",
+        "breaking news",
+        "conflicto hoy"
+    ]
     
-    print("   - Creando redactor...")
-    redactor = ContentRedactor()
-    print("     ✓ redactor creado")
+    encontrados = []
     
-    print("   - Creando publisher...")
-    publisher = FacebookPublisher(fb_page, fb_token)
-    print("     ✓ publisher creado")
+    for query in queries:
+        if len(encontrados) >= 3:
+            break
+            
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            'part': 'snippet',
+            'q': query,
+            'type': 'video',
+            'videoDuration': 'short',
+            'order': 'date',
+            'publishedAfter': (datetime.utcnow() - timedelta(hours=6)).isoformat("T") + "Z",
+            'maxResults': 5,
+            'key': YOUTUBE_API_KEY
+        }
+        
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            data = resp.json()
+            
+            for item in data.get('items', []):
+                vid = item['id']['videoId']
+                titulo = item['snippet']['title']
+                
+                # Verificar duración
+                dur_url = "https://www.googleapis.com/youtube/v3/videos"
+                dur_params = {'part': 'contentDetails', 'id': vid, 'key': YOUTUBE_API_KEY}
+                dur_resp = requests.get(dur_url, params=dur_params, timeout=5)
+                dur_data = dur_resp.json()
+                
+                if dur_data.get('items'):
+                    dur_iso = dur_data['items'][0]['contentDetails']['duration']
+                    # Parsear PT1M30S
+                    match = re.match(r'PT(?:(\d+)M)?(?:(\d+)S)?', dur_iso)
+                    mins = int(match.group(1) or 0)
+                    secs = int(match.group(2) or 0)
+                    total_secs = mins * 60 + secs
+                    
+                    if 15 <= total_secs <= 60:
+                        encontrados.append({
+                            'id': vid,
+                            'titulo': titulo,
+                            'url': f"https://youtube.com/shorts/{vid}"
+                        })
+                        print(f"  ✓ {vid}: {titulo[:50]}...")
+                        
+        except Exception as e:
+            print(f"  Error en búsqueda: {e}")
+            continue
     
-except Exception as e:
-    print(f"ERROR creando instancias: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+    return encontrados
 
-# Paso 4: Buscar videos
-print("\n4. Buscando shorts...")
-try:
-    shorts = scraper.buscar_shorts_noticias(max_results=2)
-    print(f"   ✓ Encontrados: {len(shorts)} shorts")
-    for i, s in enumerate(shorts, 1):
-        print(f"     {i}. {s.get('titulo', 'N/A')[:50]}...")
-except Exception as e:
-    print(f"ERROR buscando: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+def descargar_video(video_id, url):
+    """Descarga video con yt-dlp"""
+    print(f"\n--- Descargando {video_id} ---")
+    
+    output = f"temp/{video_id}.mp4"
+    
+    # Borrar si existe
+    if os.path.exists(output):
+        os.remove(output)
+    
+    cmd = [
+        'yt-dlp',
+        '-f', 'best[height<=720]',
+        '-o', output,
+        '--quiet',
+        '--no-warnings',
+        url
+    ]
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        
+        if result.returncode == 0 and os.path.exists(output):
+            size = os.path.getsize(output)
+            print(f"  ✓ Descargado: {size/1024/1024:.1f} MB")
+            return output
+        else:
+            print(f"  ✗ Error: {result.stderr}")
+            return None
+            
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+        return None
 
-if not shorts:
-    print("No se encontraron videos, terminando")
-    sys.exit(0)
+def crear_texto(titulo_original):
+    """Crea nuevo título y descripción"""
+    print("\n--- Creando texto ---")
+    
+    # Limpiar título
+    limpio = re.sub(r'noticias|news|urgente|breaking|shorts|youtube', '', titulo_original, flags=re.I)
+    limpio = limpio.strip()[:60]
+    
+    plantillas = [
+        f"🔴 {limpio} | Última hora",
+        f"⚡ {limpio} - Reporte inmediato",
+        f"🚨 {limpio} | Desarrollo"
+    ]
+    
+    nuevo_titulo = random.choice(plantillas)
+    
+    descripcion = f"""📰 Información actualizada
 
-# Paso 5: Descargar
-print("\n5. Descargando...")
-try:
-    video = shorts[0]
-    print(f"   Descargando {video.get('video_id')}...")
-    archivo = downloader.descargar_short(video)
-    if archivo:
-        print(f"   ✓ Descargado: {archivo}")
-    else:
-        print("   ✗ Falló descarga")
-        sys.exit(1)
-except Exception as e:
-    print(f"ERROR descargando: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+🔍 {limpio}
 
-# Paso 6: Reescribir
-print("\n6. Reescribiendo contenido...")
-try:
-    contenido = redactor.reescribir(video.get('titulo', ''), 'general')
-    print(f"   ✓ Título nuevo: {contenido.get('titulo_nuevo', 'N/A')[:50]}...")
-except Exception as e:
-    print(f"ERROR reescribiendo: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+¿Qué opinas? Comenta 👇
 
-# Paso 7: Publicar
-print("\n7. Publicando en Facebook...")
-try:
-    resultado = publisher.publicar_video(archivo, contenido)
-    if resultado.get('success'):
-        print(f"   ✓ PUBLICADO: {resultado.get('post_id')}")
-    else:
-        print(f"   ✗ ERROR: {resultado.get('error')}")
-        sys.exit(1)
-except Exception as e:
-    print(f"ERROR publicando: {e}")
-    traceback.print_exc()
-    sys.exit(1)
+#Noticias #Actualidad #ÚltimaHora"""
+    
+    print(f"  Título: {nuevo_titulo[:50]}...")
+    return {'titulo': nuevo_titulo, 'descripcion': descripcion}
 
-print("\n=== ÉXITO ===")
-sys.exit(0)
+def publicar_facebook(video_path, contenido):
+    """Sube video a Facebook"""
+    print("\n--- Publicando en Facebook ---")
+    
+    url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/videos"
+    
+    mensaje = f"{contenido['titulo']}\n\n{contenido['descripcion']}"
+    
+    try:
+        with open(video_path, 'rb') as f:
+            files = {'file': f}
+            data = {
+                'description': mensaje,
+                'access_token': FB_ACCESS_TOKEN
+            }
+            
+            resp = requests.post(url, files=files, data=data, timeout=300)
+            result = resp.json()
+            
+            print(f"  Respuesta: {result}")
+            
+            if 'id' in result:
+                print(f"  ✓✓✓ PUBLICADO: {result['id']}")
+                return True
+            else:
+                print(f"  ✗ Error: {result.get('error', 'Desconocido')}")
+                return False
+                
+    except Exception as e:
+        print(f"  ✗ Error: {e}")
+        return False
+
+# ============================================
+# EJECUCIÓN PRINCIPAL
+# ============================================
+
+from datetime import timedelta
+
+def main():
+    # Crear carpeta temp
+    os.makedirs('temp', exist_ok=True)
+    
+    # 1. Buscar
+    videos = buscar_shorts()
+    if not videos:
+        print("No se encontraron videos")
+        return
+    
+    # 2. Intentar descargar y publicar el primero que funcione
+    for video in videos:
+        print(f"\n{'='*50}")
+        print(f"Procesando: {video['titulo'][:50]}...")
+        
+        # Descargar
+        archivo = descargar_video(video['id'], video['url'])
+        if not archivo:
+            continue
+        
+        # Crear texto
+        contenido = crear_texto(video['titulo'])
+        
+        # Publicar
+        exito = publicar_facebook(archivo, contenido)
+        
+        # Limpiar
+        if os.path.exists(archivo):
+            os.remove(archivo)
+            print(f"  Archivo temporal eliminado")
+        
+        if exito:
+            print(f"\n{'='*50}")
+            print("¡PUBLICACIÓN EXITOSA!")
+            return
+    
+    print("\nNo se pudo publicar ningún video")
+
+if __name__ == "__main__":
+    main()
