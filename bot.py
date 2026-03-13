@@ -39,10 +39,84 @@ def buscar_shorts():
     print(f"{'='*60}")
     
     queries = [
+        # 🎯 CATEGORÍAS ORIGINALES (4)
         "noticias urgentes hoy",
         "ultima hora internacional", 
         "breaking news today",
-        "conflicto mundial hoy"
+        "conflicto mundial hoy",
+        
+        # 🏛️ DICTADURAS Y REGÍMENES AUTORITARIOS (10)
+        "dictadura hoy",
+        "regimen autoritario noticias",
+        "represion gubernamental",
+        "protestas dictadura",
+        "sanciones regimen",
+        "derechos humanos violaciones",
+        "censura gubernamental",
+        "oposicion politica perseguida",
+        "elecciones fraudulentas",
+        "transicion democratica fallida",
+        
+        # ⚔️ GUERRAS Y CONFLICTOS ARMADOS (10)
+        "guerra hoy",
+        "conflicto armado actual",
+        "ofensiva militar",
+        "ataque aereo hoy",
+        "bombardeo noticias",
+        "cese al fuego roto",
+        "invasion territorial",
+        "resistencia armada",
+        "guerra civil",
+        "intervencion militar",
+        
+        # ⛏️ TIERRAS RARAS Y RECURSOS ESTRATÉGICOS (10)
+        "tierras raras noticias",
+        "minerales estrategicos guerra",
+        "litio conflicto",
+        "cobalto mineria",
+        "recursos naturales disputa",
+        "monopolio minero",
+        "cadena suministro minerales",
+        "china tierras raras",
+        "guerra economica recursos",
+        "sanciones minerales",
+        
+        # 🤖 GUERRA TECNOLÓGICA Y AVANCES MILITARES (12)
+        "drones militares noticias",
+        "inteligencia artificial guerra",
+        "ciberataque militar",
+        "armas hipersonicas",
+        "guerra cibernetica",
+        "robotica militar",
+        "satelite espionaje",
+        "defensa antimisiles",
+        "tecnologia militar avance",
+        "guerra electronica",
+        "ia en combate",
+        "autonomous weapons",
+        
+        # 🌍 GEOPOLÍTICA Y TENSIONES GLOBALES (10)
+        "tension diplomatica hoy",
+        "sanciones economicas noticias",
+        "guerra fria 2.0",
+        "alianza militar",
+        "otan noticias",
+        "otsc noticias",
+        "brics guerra",
+        "g7 g20 tension",
+        "embargo armas",
+        "crisis diplomatica",
+        
+        # 🔥 CRISIS HUMANITARIAS (9)
+        "refugiados guerra",
+        "crisis humanitaria hoy",
+        "ayuda humanitaria bloqueada",
+        "hambruna conflicto",
+        "desplazados guerra",
+        "campo refugiados",
+        "genocidio noticias",
+        "crimenes guerra",
+        "tribunal penal internacional"
     ]
     
     encontrados = []
