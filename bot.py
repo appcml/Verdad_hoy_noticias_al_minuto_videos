@@ -36,11 +36,11 @@ print("\n✓ Todas las variables configuradas")
 def buscar_shorts():
     print(f"\n{'='*60}")
     print("PASO 1: BUSCANDO SHORTS EN YOUTUBE")
-    print(f"{'='*60}")
-    
-    queries = [
-        # 🎯 ORIGINALES (4)
-        "noticias urgentes hoy",
+   print(f"{'='*60}")
+
+queries = [
+    # 🎯 ORIGINALES (4)
+    "noticias urgentes hoy",
         "ultima hora internacional", 
         "breaking news today",
         "conflicto mundial hoy",
