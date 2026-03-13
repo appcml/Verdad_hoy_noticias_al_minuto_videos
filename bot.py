@@ -38,14 +38,14 @@ def buscar_shorts():
     print("PASO 1: BUSCANDO SHORTS EN YOUTUBE")
     print(f"{'='*60}")
     
-    queries = [
-        # 🎯 CATEGORÍAS ORIGINALES (4)
+        queries = [
+        # 🎯 ORIGINALES (4)
         "noticias urgentes hoy",
         "ultima hora internacional", 
         "breaking news today",
         "conflicto mundial hoy",
         
-        # 🏛️ DICTADURAS Y REGÍMENES AUTORITARIOS (10)
+        # 🏛️ DICTADURAS (10)
         "dictadura hoy",
         "regimen autoritario noticias",
         "represion gubernamental",
@@ -57,7 +57,7 @@ def buscar_shorts():
         "elecciones fraudulentas",
         "transicion democratica fallida",
         
-        # ⚔️ GUERRAS Y CONFLICTOS ARMADOS (10)
+        # ⚔️ GUERRAS (10)
         "guerra hoy",
         "conflicto armado actual",
         "ofensiva militar",
@@ -69,7 +69,7 @@ def buscar_shorts():
         "guerra civil",
         "intervencion militar",
         
-        # ⛏️ TIERRAS RARAS Y RECURSOS ESTRATÉGICOS (10)
+        # ⛏️ TIERRAS RARAS (10)
         "tierras raras noticias",
         "minerales estrategicos guerra",
         "litio conflicto",
@@ -81,7 +81,7 @@ def buscar_shorts():
         "guerra economica recursos",
         "sanciones minerales",
         
-        # 🤖 GUERRA TECNOLÓGICA Y AVANCES MILITARES (12)
+        # 🤖 TECNOLOGÍA MILITAR (12)
         "drones militares noticias",
         "inteligencia artificial guerra",
         "ciberataque militar",
@@ -95,7 +95,7 @@ def buscar_shorts():
         "ia en combate",
         "autonomous weapons",
         
-        # 🌍 GEOPOLÍTICA Y TENSIONES GLOBALES (10)
+        # 🌍 GEOPOLÍTICA (10)
         "tension diplomatica hoy",
         "sanciones economicas noticias",
         "guerra fria 2.0",
@@ -116,7 +116,75 @@ def buscar_shorts():
         "campo refugiados",
         "genocidio noticias",
         "crimenes guerra",
-        "tribunal penal internacional"
+        "tribunal penal internacional",
+        
+        # 🌎 AMÉRICA (12)
+        "noticias america latina hoy",
+        "mexico noticias urgentes",
+        "colombia conflicto actual",
+        "venezuela crisis noticias",
+        "brasil protestas hoy",
+        "argentina economia crisis",
+        "chile noticias hoy",
+        "peru protestas dictadura",
+        "centroamerica violencia",
+        "eeuu noticias hoy",
+        "canada politica actual",
+        "migracion frontera sur",
+        
+        # 🌍 ÁFRICA (12)
+        "africa conflictos hoy",
+        "sahel guerra jihadista",
+        "mali noticias conflicto",
+        "nigeria seguridad hoy",
+        "etiopia guerra tigray",
+        "sudan guerra civil",
+        "somalia al shabaab",
+        "rd congo m23",
+        "sudafrica crisis actual",
+        "magreb noticias hoy",
+        "africa coup etat",
+        "pirateria africa",
+        
+        # 🌏 ASIA-PACÍFICO (14)
+        "china taiwan tension",
+        "corea norte noticias",
+        "japon militar noticias",
+        "india pakistan conflicto",
+        "myanmar dictadura noticias",
+        "filipinas china mar",
+        "vietnam noticias hoy",
+        "tailandia protestas",
+        "indonesia noticias",
+        "afganistan taliban",
+        "pakistan terrorismo",
+        "bangladesh crisis",
+        "australia noticias hoy",
+        "nueva zelanda actualidad",
+        
+        # 🌍 EUROPA (10)
+        "ue noticias hoy",
+        "rusia ucrania guerra",
+        "balkanes tension",
+        "turquia erdogan",
+        "polonia belarus frontera",
+        "hungria orban dictadura",
+        "serbia kosovo conflicto",
+        "caucaso armenia azerbaiyan",
+        "reino unido noticias",
+        "escandinavia noticias",
+        
+        # 🌏 ORIENTE MEDIO (10)
+        "israel palestina guerra",
+        "iran noticias hoy",
+        "arabia saudi noticias",
+        "yemen guerra hoy",
+        "siria conflicto actual",
+        "libano hezbollah",
+        "irak noticias hoy",
+        "emiratos arabes noticias",
+        "qatar crisis diplomatica",
+        "kurdistan conflicto"
     ]
     
     encontrados = []
