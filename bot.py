@@ -38,7 +38,7 @@ def buscar_shorts():
     print("PASO 1: BUSCANDO SHORTS EN YOUTUBE")
    print(f"{'='*60}")
 
-queries = [
+   queries = [
     # 🎯 ORIGINALES (4)
     "noticias urgentes hoy",
         "ultima hora internacional", 
