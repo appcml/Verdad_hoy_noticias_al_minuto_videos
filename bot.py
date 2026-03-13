@@ -36,11 +36,11 @@ print("\n✓ Todas las variables configuradas")
 def buscar_shorts():
     print(f"\n{'='*60}")
     print("PASO 1: BUSCANDO SHORTS EN YOUTUBE")
-   print(f"{'='*60}")
-
-   queries = [
-    # 🎯 ORIGINALES (4)
-    "noticias urgentes hoy",
+    print(f"{'='*60}")
+    
+    queries = [
+        # 🎯 ORIGINALES (4)
+        "noticias urgentes hoy",
         "ultima hora internacional", 
         "breaking news today",
         "conflicto mundial hoy",
@@ -475,7 +475,8 @@ def publicar_facebook(video_path, contenido):
 def main():
     print(f"\n{'#'*60}")
     print("#" + " "*58 + "#")
-    print("#" + "   BOT DE NOTICIAS - MODO DIAGNÓSTICO   ".center(58) + "#")
+    print("#" + "   BOT DE NOTICIAS - MODO GLOBAL   ".center(58) + "#")
+    print("#" + "   123 CATEGORÍAS DE BÚSQUEDA ACTIVAS   ".center(58) + "#")
     print("#" + " "*58 + "#")
     print(f"{'#'*60}")
     
