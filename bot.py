@@ -1,24 +1,91 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot de Noticias en VIDEO para Facebook
-- Busca noticias internacionales en formato video (YouTube, Twitter/X, noticieros)
-- Publica videos nativos en Facebook
-- Prioriza: Conflictos bélicos, política global, economía mundial
+Bot de Noticias en VIDEO para Facebook - V2.1 CORREGIDO
+- Manejo de dependencias opcionales
+- Fallbacks si fallan módulos
+- Compatible con GitHub Actions
 """
 
-import requests
-import feedparser
+import os
+import sys
 import re
 import hashlib
 import json
-import os
-import random
-import html as html_module
+import tempfile
+import subprocess
 from datetime import datetime, timedelta
-from bs4 import BeautifulSoup, Comment
-from difflib import SequenceMatcher
-import urllib.parse
+from urllib.parse import urlparse
+
+# =============================================================================
+# MANEJO DE DEPENDENCIAS OPCIONALES
+# =============================================================================
+
+DEPENDENCIAS_FALTANTES = []
+
+# Intentar importar requests (obligatorio)
+try:
+    import requests
+except ImportError:
+    print("❌ ERROR CRÍTICO: 'requests' no instalado. Ejecuta: pip install requests")
+    sys.exit(1)
+
+# Intentar importar feedparser (opcional - RSS)
+try:
+    import feedparser
+    FEEDPARSER_DISPONIBLE = True
+except ImportError:
+    FEEDPARSER_DISPONIBLE = False
+    DEPENDENCIAS_FALTANTES.append('feedparser')
+
+# Intentar importar BeautifulSoup (semi-obligatorio)
+try:
+    from bs4 import BeautifulSoup, Comment
+    BS4_DISPONIBLE = True
+except ImportError:
+    BS4_DISPONIBLE = False
+    DEPENDENCIAS_FALTANTES.append('beautifulsoup4')
+
+# Intentar importar difflib (estándar, debería estar)
+try:
+    from difflib import SequenceMatcher
+except ImportError:
+    # Fallback simple si no existe
+    class SequenceMatcher:
+        def __init__(self, *args):
+            pass
+        def ratio(self):
+            return 0.0
+
+# Intentar importar isodate (opcional - duración YouTube)
+try:
+    import isodate
+    ISODATE_DISPONIBLE = True
+except ImportError:
+    ISODATE_DISPONIBLE = False
+    DEPENDENCIAS_FALTANTES.append('isodate')
+
+# Intentar importar PIL (opcional - thumbnails)
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    PIL_DISPONIBLE = True
+except ImportError:
+    PIL_DISPONIBLE = False
+    DEPENDENCIAS_FALTANTES.append('pillow')
+
+# html module (estándar en Python 3)
+try:
+    import html as html_module
+except ImportError:
+    # Fallback
+    class html_module:
+        @staticmethod
+        def unescape(s):
+            return s.replace('&lt;', '<').replace('&gt;', '>').replace('&amp;', '&')
+
+if DEPENDENCIAS_FALTANTES:
+    print(f"⚠️  Dependencias faltantes (funcionalidad reducida): {', '.join(DEPENDENCIAS_FALTANTES)}")
+    print(f"   Instalar con: pip install {' '.join(DEPENDENCIAS_FALTANTES)}")
 
 # =============================================================================
 # CONFIGURACIÓN
@@ -29,44 +96,31 @@ NEWSDATA_API_KEY = os.getenv('NEWSDATA_API_KEY')
 GNEWS_API_KEY = os.getenv('GNEWS_API_KEY')
 FB_PAGE_ID = os.getenv('FB_PAGE_ID')
 FB_ACCESS_TOKEN = os.getenv('FB_ACCESS_TOKEN')
-YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')  # 🆕 NUEVO: Para búsqueda de videos
+YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
 
 HISTORIAL_PATH = os.getenv('HISTORIAL_PATH', 'data/historial_publicaciones.json')
 ESTADO_PATH = os.getenv('ESTADO_PATH', 'data/estado_bot.json')
 
-TIEMPO_ENTRE_PUBLICACIONES = 60  # 60 minutos
+TIEMPO_ENTRE_PUBLICACIONES = 60
 VENTANA_DUPLICADOS_HORAS = 72
 UMBRAL_SIMILITUD_TITULO = 0.85
 
 # =============================================================================
-# PALABRAS CLAVE INTERNACIONALES - OPTIMIZADAS PARA VIDEO
+# PALABRAS CLAVE
 # =============================================================================
 
 PALABRAS_ALTA_PRIORIDAD = [
-    # Términos de video/noticieros
     "breaking news", "ultima hora", "en vivo", "live", "noticiero", "news report",
     "footage", "video footage", "war footage", "conflict video",
-    
-    # Conflictos actuales
     "guerra ucrania video", "gaza video", "israel palestina video",
     "rusia ucrania noticias", "zelensky", "putin", "netanyahu", "hamas",
     "bombardeo video", "ataque drone video", "military footage",
-    
-    # Crisis geopolíticas
     "taiwan tension", "china taiwan video", "south china sea",
     "iran israel", "red sea crisis", "houthis attack",
-    
-    # Tecnología militar
     "drones militares", "hypersonic missile", "nuclear test",
     "cyber attack", "space force", "satellite footage",
-    
-    # Crisis humanitarias
     "refugee crisis video", "humanitarian crisis", "war crimes tribunal",
-    
-    # Economía/Recursos
     "rare earth war", "lithium conflict", "chip war", "sanctions impact",
-    
-    # Protests/Dictaduras
     "protestas venezuela", "myanmar coup", "iran protestas",
 ]
 
@@ -82,7 +136,7 @@ TERMINOS_EXCLUIR = [
 ]
 
 # =============================================================================
-# FUNCIONES DE UTILIDAD (mantener las mismas)
+# FUNCIONES BÁSICAS
 # =============================================================================
 
 def log(mensaje, tipo='info'):
@@ -183,18 +237,17 @@ def calcular_puntaje_internacional(titulo, descripcion):
     if 50 <= len(titulo) <= 120:
         puntaje += 2
     
-    # Bonus por ser video
     if any(x in texto for x in ['video', 'footage', 'en vivo', 'live']):
         puntaje += 5
     
     return puntaje
 
 # =============================================================================
-# 🆕 NUEVO: BÚSQUEDA DE VIDEOS EN YOUTUBE
+# BÚSQUEDA DE VIDEOS - CON FALLBACKS
 # =============================================================================
 
 def buscar_videos_youtube():
-    """Busca videos de noticias internacionales en YouTube"""
+    """Busca videos en YouTube Data API"""
     if not YOUTUBE_API_KEY:
         log("YouTube API Key no configurada", 'advertencia')
         return []
@@ -205,9 +258,7 @@ def buscar_videos_youtube():
         "guerra ucrania noticias hoy",
         "israel palestina conflicto noticias",
         "breaking news international",
-        "world news today",
-        "geopolitica actualidad",
-        "crisis mundial noticias"
+        "world news today"
     ]
     
     for query in queries:
@@ -217,8 +268,8 @@ def buscar_videos_youtube():
                 'part': 'snippet',
                 'q': query,
                 'type': 'video',
-                'videoDuration': 'short',  # Menos de 4 minutos (ideal para FB)
-                'order': 'date',  # Más recientes primero
+                'videoDuration': 'short',
+                'order': 'date',
                 'maxResults': 10,
                 'key': YOUTUBE_API_KEY,
                 'relevanceLanguage': 'es',
@@ -236,9 +287,7 @@ def buscar_videos_youtube():
                     titulo = snippet.get('title', '')
                     descripcion = snippet.get('description', '')
                     canal = snippet.get('channelTitle', '')
-                    publicado = snippet.get('publishedAt', '')
                     
-                    # Filtrar canales de noticias confiables
                     canales_confiables = [
                         'BBC', 'CNN', 'Al Jazeera', 'DW', 'France 24', 
                         'Euronews', 'RT', 'TeleSUR', 'Actualidad RT'
@@ -254,73 +303,27 @@ def buscar_videos_youtube():
                             'video_id': video_id,
                             'thumbnail': snippet.get('thumbnails', {}).get('high', {}).get('url', ''),
                             'fuente': f"YouTube:{canal}",
-                            'fecha': publicado,
+                            'fecha': snippet.get('publishedAt'),
                             'puntaje': calcular_puntaje_internacional(titulo, descripcion) + (5 if es_canal_confiable else 0),
                             'tipo': 'youtube'
                         })
-                        
         except Exception as e:
             log(f"Error YouTube API: {e}", 'error')
             continue
     
-    log(f"YouTube: {len(videos)} videos encontrados", 'info')
+    log(f"YouTube: {len(videos)} videos", 'info')
     return videos
 
-def obtener_video_info_youtube(video_id):
-    """Obtiene información detallada del video incluyendo duración"""
-    if not YOUTUBE_API_KEY:
-        return None
-    
-    try:
-        url = "https://www.googleapis.com/youtube/v3/videos"
-        params = {
-            'part': 'contentDetails,statistics',
-            'id': video_id,
-            'key': YOUTUBE_API_KEY
-        }
-        
-        resp = requests.get(url, params=params, timeout=10)
-        data = resp.json()
-        
-        if data.get('items'):
-            item = data['items'][0]
-            # Convertir duración ISO 8601 a segundos
-            duracion_iso = item['contentDetails']['duration']
-            # PT4M20S -> 260 segundos
-            import isodate
-            duracion_seg = isodate.parse_duration(duracion_iso).total_seconds()
-            
-            return {
-                'duracion_segundos': duracion_seg,
-                'vistas': item['statistics'].get('viewCount', 0)
-            }
-    except:
-        pass
-    
-    return None
-
-# =============================================================================
-# 🆕 NUEVO: BÚSQUEDA DE VIDEOS EN OTRAS FUENTES
-# =============================================================================
-
-def buscar_videos_twitter_x():
-    """Busca videos de noticias en Twitter/X (requiere API de pago, placeholder)"""
-    # Nota: La API de X (Twitter) requiere nivel Basic ($100/mes) para búsqueda
-    # Este es un placeholder para futura implementación
-    log("Twitter/X video search requiere API de pago - omitiendo", 'debug')
-    return []
-
 def buscar_videos_news_apis():
-    """Busca noticias que incluyan videos en las APIs de noticias"""
+    """Busca videos en APIs de noticias"""
     videos = []
     
-    # NewsAPI - buscar videos
     if NEWS_API_KEY:
         try:
             url = 'https://newsapi.org/v2/everything'
             params = {
                 'apiKey': NEWS_API_KEY,
-                'q': 'video AND (war OR conflict OR Ukraine OR Israel OR Gaza)',
+                'q': 'video AND (war OR conflict OR Ukraine OR Israel)',
                 'language': 'es',
                 'sortBy': 'publishedAt',
                 'pageSize': 15
@@ -334,10 +337,8 @@ def buscar_videos_news_apis():
                     titulo = art.get('title', '')
                     url_art = art.get('url', '')
                     
-                    # Detectar si la URL es de video
                     dominios_video = ['youtube.com', 'youtu.be', 'twitter.com', 'x.com', 
-                                     'facebook.com/watch', 'instagram.com/reel', 'tiktok.com',
-                                     'rumble.com', 'bilibili.com']
+                                     'facebook.com/watch', 'rumble.com']
                     
                     es_video = any(d in url_art.lower() for d in dominios_video)
                     
@@ -346,25 +347,27 @@ def buscar_videos_news_apis():
                             'titulo': limpiar_texto(titulo),
                             'descripcion': limpiar_texto(art.get('description', '')),
                             'url': url_art,
-                            'imagen': art.get('urlToImage'),
-                            'fuente': f"NewsAPI-Video:{art.get('source', {}).get('name', 'Unknown')}",
+                            'fuente': f"NewsAPI:{art.get('source', {}).get('name', 'Unknown')}",
                             'fecha': art.get('publishedAt'),
                             'puntaje': calcular_puntaje_internacional(titulo, art.get('description', '')),
                             'tipo': 'externo'
                         })
         except Exception as e:
-            log(f"Error NewsAPI video: {e}", 'error')
+            log(f"Error NewsAPI: {e}", 'error')
     
-    log(f"NewsAPI Videos: {len(videos)} encontrados", 'info')
+    log(f"NewsAPI Videos: {len(videos)}", 'info')
     return videos
 
 def buscar_videos_rss_noticieros():
-    """Busca videos en feeds RSS de noticieros internacionales"""
+    """Busca videos en RSS - SOLO si feedparser está disponible"""
+    if not FEEDPARSER_DISPONIBLE:
+        log("feedparser no disponible, omitiendo RSS", 'debug')
+        return []
+    
     feeds_video = [
-        'https://www.youtube.com/feeds/videos.xml?channel_id=UC16niRr50-MSBwiO3YDb3RA',  # BBC Mundo
-        'https://www.youtube.com/feeds/videos.xml?channel_id=UCzUV528KlngtCTr2gBCiNbQ',  # CNN Español
-        'https://www.youtube.com/feeds/videos.xml?channel_id=UCknLrEdhRCp1aegoMqRaCZg',  # DW Español
-        'https://www.youtube.com/feeds/videos.xml?channel_id=UCdTD5Y9dyXOFbHq6FeLdmfA',  # FRANCE 24 Español
+        'https://www.youtube.com/feeds/videos.xml?channel_id=UC16niRr50-MSBwiO3YDb3RA',
+        'https://www.youtube.com/feeds/videos.xml?channel_id=UCzUV528KlngtCTr2gBCiNbQ',
+        'https://www.youtube.com/feeds/videos.xml?channel_id=UCknLrEdhRCp1aegoMqRaCZg',
     ]
     
     videos = []
@@ -375,11 +378,10 @@ def buscar_videos_rss_noticieros():
             feed = feedparser.parse(feed_url, request_headers=headers)
             canal = feed.feed.get('title', 'Unknown')
             
-            for entry in feed.entries[:5]:  # Últimos 5 videos del canal
+            for entry in feed.entries[:5]:
                 titulo = entry.get('title', '')
                 link = entry.get('link', '')
                 
-                # Extraer video ID de YouTube
                 video_id = None
                 if 'youtube.com/watch?v=' in link:
                     video_id = link.split('v=')[1].split('&')[0]
@@ -398,31 +400,35 @@ def buscar_videos_rss_noticieros():
         except Exception as e:
             continue
     
-    log(f"RSS Noticieros: {len(videos)} videos", 'info')
+    log(f"RSS: {len(videos)} videos", 'info')
     return videos
 
 # =============================================================================
-# 🆕 NUEVO: DESCARGA Y PROCESAMIENTO DE VIDEO
+# PROCESAMIENTO DE VIDEO
 # =============================================================================
 
-def descargar_video_youtube(video_url, video_id):
-    """
-    Descarga video de YouTube usando yt-dlp
-    Retorna path del archivo descargado o None
-    """
+def verificar_yt_dlp():
+    """Verifica si yt-dlp está instalado"""
     try:
-        import subprocess
-        import tempfile
-        
-        # Crear directorio temporal
+        result = subprocess.run(['yt-dlp', '--version'], 
+                              capture_output=True, text=True, timeout=5)
+        return result.returncode == 0
+    except:
+        return False
+
+def descargar_video_youtube(video_url, video_id):
+    """Descarga video con yt-dlp"""
+    if not verificar_yt_dlp():
+        log("yt-dlp no instalado", 'advertencia')
+        return None
+    
+    try:
         temp_dir = tempfile.mkdtemp()
         output_path = os.path.join(temp_dir, f"{video_id}.mp4")
         
-        # Configurar yt-dlp para descarga optimizada para Facebook
-        # Formatos: 720p máximo, mp4, con audio
         cmd = [
             'yt-dlp',
-            '-f', 'best[height<=720][ext=mp4]/best[height<=720]/best[ext=mp4]/best',
+            '-f', 'best[height<=720][ext=mp4]/best[height<=720]/best',
             '--merge-output-format', 'mp4',
             '--output', output_path,
             '--no-playlist',
@@ -431,27 +437,26 @@ def descargar_video_youtube(video_url, video_id):
             video_url
         ]
         
-        log(f"   ⬇️ Descargando video: {video_id}", 'info')
+        log(f"   ⬇️ Descargando: {video_id}", 'info')
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         
         if result.returncode == 0 and os.path.exists(output_path):
-            # Verificar tamaño (Facebook permite hasta 10GB, pero mantenemos <100MB para velocidad)
             size_mb = os.path.getsize(output_path) / (1024 * 1024)
-            log(f"   ✅ Video descargado: {size_mb:.1f} MB", 'exito')
+            log(f"   ✅ Descargado: {size_mb:.1f} MB", 'exito')
             return output_path
         else:
-            log(f"   ❌ Error descarga: {result.stderr}", 'error')
+            log(f"   ❌ Error: {result.stderr[:100]}", 'error')
             return None
             
     except subprocess.TimeoutExpired:
-        log("   ⏱️ Timeout descargando video", 'error')
+        log("   ⏱️ Timeout", 'error')
         return None
     except Exception as e:
         log(f"   ❌ Error: {e}", 'error')
         return None
 
 def obtener_thumbnail_video(url_thumbnail, video_id):
-    """Descarga thumbnail como fallback si el video falla"""
+    """Descarga thumbnail"""
     if not url_thumbnail:
         return None
     
@@ -468,35 +473,24 @@ def obtener_thumbnail_video(url_thumbnail, video_id):
     return None
 
 # =============================================================================
-# 🆕 NUEVO: PUBLICACIÓN DE VIDEO EN FACEBOOK
+# PUBLICACIÓN FACEBOOK
 # =============================================================================
 
-def publicar_video_facebook(titulo, descripcion, video_path, hashtags, video_info=None):
-    """
-    Publica video nativo en Facebook usando Graph API
-    """
+def publicar_video_facebook(titulo, descripcion, video_path, hashtags):
+    """Publica video nativo"""
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
-        log("Faltan credenciales Facebook", 'error')
+        log("Faltan credenciales FB", 'error')
         return False
     
-    # Construir mensaje
-    mensaje = f"📰 {titulo}\n\n{descripcion}\n\n{hashtags}\n\n— 🌐 Verdad Hoy | Agencia de Noticias Internacionales"
+    mensaje = f"📰 {titulo}\n\n{descripcion}\n\n{hashtags}\n\n— 🌐 Verdad Hoy"
     
-    # Truncar si es necesario
     if len(mensaje) > 2000:
         mensaje = mensaje[:1900] + "...\n\n" + hashtags
     
     try:
-        # Endpoint para videos
         url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/videos"
         
-        # Preparar archivo
         file_size = os.path.getsize(video_path)
-        
-        # Para videos grandes, usar resumable upload
-        if file_size > 50 * 1024 * 1024:  # > 50MB
-            log("   📤 Usando upload resumable para video grande...", 'info')
-            return publicar_video_resumable(url, video_path, mensaje)
         
         # Upload simple para videos < 50MB
         with open(video_path, 'rb') as f:
@@ -507,59 +501,36 @@ def publicar_video_facebook(titulo, descripcion, video_path, hashtags, video_inf
                 'published': 'true'
             }
             
-            # Añadir título si está disponible
-            if video_info:
-                data['title'] = titulo[:100]
-            
-            log("   📤 Subiendo video a Facebook...", 'info')
+            log("   📤 Subiendo a Facebook...", 'info')
             resp = requests.post(url, files=files, data=data, timeout=300)
             result = resp.json()
         
         if resp.status_code == 200 and 'id' in result:
-            log(f"✅ Video publicado ID: {result['id']}", 'exito')
+            log(f"✅ Video publicado: {result['id']}", 'exito')
             return True
         else:
-            error_msg = result.get('error', {}).get('message', 'Unknown error')
-            log(f"❌ Error FB: {error_msg}", 'error')
-            
-            # Si falla por tamaño, intentar como enlace
-            if 'file size' in error_msg.lower() or 'larger' in error_msg.lower():
-                log("   ⚠️ Intentando publicar como enlace de video...", 'advertencia')
-                return False  # Retornamos False para que el caller intente thumbnail
-            
+            error_msg = result.get('error', {}).get('message', 'Unknown')
+            log(f"❌ Error FB: {error_msg[:100]}", 'error')
             return False
             
     except Exception as e:
-        log(f"Error publicando video: {e}", 'error')
+        log(f"Error: {e}", 'error')
         return False
 
-def publicar_video_resumable(url, video_path, mensaje):
-    """
-    Upload resumable para videos grandes (no implementado completamente)
-    En producción, implementar start-upload, transfer, finish-upload
-    """
-    log("Upload resumable requiere implementación adicional", 'advertencia')
-    return False
-
 def publicar_enlace_video_facebook(titulo, descripcion, url_video, hashtags, thumbnail_path=None):
-    """
-    Fallback: Publica como enlace de video con preview
-    """
+    """Fallback: Publica como enlace con thumbnail"""
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
         return False
     
     mensaje = f"📰 {titulo}\n\n{descripcion}\n\n🔗 Ver video: {url_video}\n\n{hashtags}\n\n— 🌐 Verdad Hoy"
     
     try:
-        # Si tenemos thumbnail, publicar como foto con enlace
         if thumbnail_path and os.path.exists(thumbnail_path):
+            # Publicar como foto con enlace
             url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/photos"
             with open(thumbnail_path, 'rb') as f:
                 files = {'file': ('thumbnail.jpg', f, 'image/jpeg')}
-                data = {
-                    'message': mensaje,
-                    'access_token': FB_ACCESS_TOKEN
-                }
+                data = {'message': mensaje, 'access_token': FB_ACCESS_TOKEN}
                 resp = requests.post(url, files=files, data=data, timeout=60)
         else:
             # Solo enlace
@@ -574,10 +545,10 @@ def publicar_enlace_video_facebook(titulo, descripcion, url_video, hashtags, thu
         result = resp.json()
         
         if resp.status_code == 200 and 'id' in result:
-            log(f"✅ Enlace de video publicado ID: {result['id']}", 'exito')
+            log(f"✅ Enlace publicado: {result['id']}", 'exito')
             return True
         else:
-            log(f"❌ Error: {result.get('error', {}).get('message', 'Unknown')}", 'error')
+            log(f"❌ Error: {result.get('error', {}).get('message', 'Unknown')[:100]}", 'error')
             return False
             
     except Exception as e:
@@ -585,23 +556,19 @@ def publicar_enlace_video_facebook(titulo, descripcion, url_video, hashtags, thu
         return False
 
 # =============================================================================
-# GESTIÓN DE HISTORIAL (mantener igual)
+# HISTORIAL
 # =============================================================================
 
 def cargar_historial():
     default = {
-        'urls': [], 
-        'hashes': [],
-        'timestamps': [],
-        'titulos': [],
-        'video_ids': [],  # 🆕 NUEVO: Tracking específico de videos
-        'estadisticas': {'total_publicadas': 0, 'videos': 0, 'links': 0}
+        'urls': [], 'hashes': [], 'timestamps': [], 'titulos': [],
+        'video_ids': [], 'estadisticas': {'total': 0, 'videos': 0, 'links': 0}
     }
     datos = cargar_json(HISTORIAL_PATH, default)
     
-    for key in ['urls', 'hashes', 'timestamps', 'titulos', 'video_ids']:
-        if key not in datos or not isinstance(datos[key], list):
-            datos[key] = []
+    for key in default.keys():
+        if key not in datos or not isinstance(datos[key], list if key != 'estadisticas' else dict):
+            datos[key] = default[key]
     
     return datos
 
@@ -611,7 +578,6 @@ def limpiar_historial_antiguo(historial):
     
     ahora = datetime.now()
     indices_validos = []
-    
     timestamps = historial.get('timestamps', [])
     
     for i, ts_str in enumerate(timestamps):
@@ -623,98 +589,77 @@ def limpiar_historial_antiguo(historial):
         except:
             continue
     
-    nuevo_historial = {
-        'urls': [],
-        'hashes': [],
-        'timestamps': [],
-        'titulos': [],
-        'video_ids': [],
-        'estadisticas': historial.get('estadisticas', {'total_publicadas': 0, 'videos': 0, 'links': 0})
+    nuevo = {
+        'urls': [], 'hashes': [], 'timestamps': [], 
+        'titulos': [], 'video_ids': [],
+        'estadisticas': historial.get('estadisticas', {'total': 0, 'videos': 0, 'links': 0})
     }
     
     for key in ['urls', 'hashes', 'timestamps', 'titulos', 'video_ids']:
         arr = historial.get(key, [])
         for i in indices_validos:
             if i < len(arr):
-                nuevo_historial[key].append(arr[i])
+                nuevo[key].append(arr[i])
     
     # Hashes permanentes
     todos_hashes = historial.get('hashes', [])
-    if len(todos_hashes) > 200:
-        nuevo_historial['hashes_permanentes'] = todos_hashes[-200:]
-    elif 'hashes_permanentes' in historial:
-        nuevo_historial['hashes_permanentes'] = historial['hashes_permanentes']
-    else:
-        nuevo_historial['hashes_permanentes'] = []
+    nuevo['hashes_permanentes'] = todos_hashes[-200:] if len(todos_hashes) > 200 else todos_hashes
     
-    return nuevo_historial
+    return nuevo
 
 def noticia_ya_publicada(historial, url, titulo, video_id=None):
-    """🆕 MEJORADO: También verifica video_id"""
-    if not historial or not isinstance(historial, dict):
+    """Verifica duplicados"""
+    if not historial:
         return False
     
-    # Verificar video_id específico
     if video_id:
-        video_ids_guardados = historial.get('video_ids', [])
-        if video_id in video_ids_guardados:
-            log(f"   ⚠️ DUPLICADO: Video ID {video_id} ya publicado", 'debug')
+        if video_id in historial.get('video_ids', []):
             return True
     
-    # Verificaciones estándar (URL, hash, similitud)
-    url_normalizada = normalizar_url(url)
-    
-    urls_guardadas = historial.get('urls', [])
-    for url_hist in urls_guardadas:
-        if normalizar_url(url_hist) == url_normalizada:
+    url_norm = normalizar_url(url)
+    for url_hist in historial.get('urls', []):
+        if normalizar_url(url_hist) == url_norm:
             return True
     
-    hash_titulo = generar_hash(titulo)
-    todos_hashes = historial.get('hashes', []) + historial.get('hashes_permanentes', [])
-    if hash_titulo in todos_hashes:
+    hash_tit = generar_hash(titulo)
+    if hash_tit in historial.get('hashes', []) + historial.get('hashes_permanentes', []):
         return True
     
-    titulos_guardados = historial.get('titulos', [])
-    for titulo_hist in titulos_guardados:
-        if calcular_similitud_titulos(titulo, titulo_hist) >= UMBRAL_SIMILITUD_TITULO:
+    for tit_hist in historial.get('titulos', []):
+        if calcular_similitud_titulos(titulo, tit_hist) >= UMBRAL_SIMILITUD_TITULO:
             return True
     
     return False
 
-def guardar_historial(historial, url, titulo, video_id=None, tipo_publicacion='video'):
-    """🆕 MEJORADO: Guarda video_id y tipo de publicación"""
+def guardar_historial(historial, url, titulo, video_id=None, tipo='video'):
     url_limpia = re.sub(r'\?.*$', '', url)
-    hash_titulo = generar_hash(titulo)
+    hash_tit = generar_hash(titulo)
     ahora = datetime.now().isoformat()
     
     historial['urls'].append(url_limpia)
-    historial['hashes'].append(hash_titulo)
+    historial['hashes'].append(hash_tit)
     historial['timestamps'].append(ahora)
     historial['titulos'].append(titulo)
-    
     if video_id:
         historial['video_ids'].append(video_id)
     
-    stats = historial.get('estadisticas', {'total_publicadas': 0, 'videos': 0, 'links': 0})
-    stats['total_publicadas'] = stats.get('total_publicadas', 0) + 1
-    if tipo_publicacion == 'video':
-        stats['videos'] = stats.get('videos', 0) + 1
-    else:
-        stats['links'] = stats.get('links', 0) + 1
+    stats = historial.get('estadisticas', {'total': 0, 'videos': 0, 'links': 0})
+    stats['total'] = stats.get('total', 0) + 1
+    stats[tipo] = stats.get(tipo, 0) + 1
     historial['estadisticas'] = stats
     
+    # Hashes permanentes
     if 'hashes_permanentes' not in historial:
         historial['hashes_permanentes'] = []
-    historial['hashes_permanentes'].append(hash_titulo)
+    historial['hashes_permanentes'].append(hash_tit)
     if len(historial['hashes_permanentes']) > 200:
         historial['hashes_permanentes'] = historial['hashes_permanentes'][-200:]
     
     historial = limpiar_historial_antiguo(historial)
     
-    max_size = 500
     for key in ['urls', 'hashes', 'timestamps', 'titulos', 'video_ids']:
-        if len(historial[key]) > max_size:
-            historial[key] = historial[key][-max_size:]
+        if len(historial[key]) > 500:
+            historial[key] = historial[key][-500:]
     
     guardar_json(HISTORIAL_PATH, historial)
 
@@ -742,58 +687,73 @@ def verificar_tiempo():
         return True
 
 # =============================================================================
-# FUNCIÓN PRINCIPAL - VIDEO
+# MAIN
 # =============================================================================
+
+def generar_hashtags(titulo, descripcion):
+    texto = f"{titulo} {descripcion}".lower()
+    hashtags = ['#NoticiasEnVideo', '#ÚltimaHora']
+    
+    temas = {
+        'guerra|conflicto|ataque': '#ConflictoArmado',
+        'ucrania|rusia|zelensky': '#UcraniaRusia',
+        'gaza|israel|palestina|hamas': '#IsraelGaza',
+        'trump|biden|politica': '#PolíticaGlobal',
+        'economía|mercados': '#EconomíaMundial',
+        'iran|yemen|arabia': '#OrienteMedio',
+        'china|taiwan': '#ChinaTaiwán',
+        'drone|dron|footage': '#WarFootage',
+    }
+    
+    for patron, tag in temas.items():
+        if re.search(patron, texto):
+            hashtags.append(tag)
+            break
+    
+    hashtags.append('#Mundo')
+    return ' '.join(hashtags)
 
 def main():
     print("\n" + "="*60)
-    print("🎥 BOT DE NOTICIAS EN VIDEO PARA FACEBOOK")
+    print("🎥 BOT DE NOTICIAS VIDEO - V2.1")
     print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*60)
     
+    if DEPENDENCIAS_FALTANTES:
+        print(f"⚠️  Modo degradado - faltan: {', '.join(DEPENDENCIAS_FALTANTES)}")
+    
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
-        log("ERROR: Faltan credenciales de Facebook", 'error')
+        log("ERROR: Faltan credenciales Facebook", 'error')
         return False
     
     if not verificar_tiempo():
         return False
     
-    # Verificar dependencias
-    try:
-        import subprocess
-        result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
-        log(f"yt-dlp versión: {result.stdout.strip()}", 'debug')
-    except:
-        log("⚠️ ADVERTENCIA: yt-dlp no instalado. Instalar con: pip install yt-dlp", 'advertencia')
-        log("   Se usará modo de enlaces de video solamente", 'advertencia')
+    yt_dlp_ok = verificar_yt_dlp()
+    log(f"yt-dlp: {'✅' if yt_dlp_ok else '❌'}", 'debug')
     
     historial = cargar_historial()
-    log(f"📊 Historial: {len(historial.get('urls', []))} videos recientes (72h)")
+    log(f"📊 Historial: {len(historial.get('urls', []))} items (72h)")
     
-    # Recolectar videos de todas las fuentes
+    # Recolectar videos
     todos_videos = []
     
-    # YouTube API (principal)
     if YOUTUBE_API_KEY:
         todos_videos.extend(buscar_videos_youtube())
     
-    # Videos en APIs de noticias
     todos_videos.extend(buscar_videos_news_apis())
-    
-    # RSS de noticieros
     todos_videos.extend(buscar_videos_rss_noticieros())
     
-    log(f"🎥 Total videos recolectados: {len(todos_videos)}")
+    log(f"🎥 Total: {len(todos_videos)} videos")
     
     if not todos_videos:
         log("ERROR: No se encontraron videos", 'error')
         return False
     
-    # Ordenar por puntaje
+    # Ordenar y filtrar
     todos_videos.sort(key=lambda x: (x.get('puntaje', 0), x.get('fecha', '')), reverse=True)
     
-    # Seleccionar video no publicado
-    video_seleccionado = None
+    video_sel = None
     intentos = 0
     
     for video in todos_videos:
@@ -805,130 +765,99 @@ def main():
         if not url or not titulo:
             continue
         
-        log(f"   [{intentos}] Probando: {titulo[:50]}...", 'debug')
+        log(f"   [{intentos}] {titulo[:50]}...", 'debug')
         
         if noticia_ya_publicada(historial, url, titulo, video_id):
-            log(f"      ❌ Rechazado: Ya publicado", 'debug')
+            log(f"      ❌ Duplicado", 'debug')
             continue
         
         if video.get('puntaje', 0) < 5:
-            log(f"      ❌ Rechazado: Puntaje bajo ({video.get('puntaje', 0)})", 'debug')
+            log(f"      ❌ Puntaje bajo", 'debug')
             continue
         
-        video_seleccionado = video
-        log(f"      ✅ Aceptado: Video válido encontrado", 'debug')
+        video_sel = video
+        log(f"      ✅ Aceptado", 'debug')
         break
     
-    if not video_seleccionado:
-        log(f"ERROR: No hay videos nuevos (revisados {intentos})", 'error')
+    if not video_sel:
+        log(f"ERROR: Sin videos nuevos ({intentos} revisados)", 'error')
         return False
     
-    log(f"\n🎬 VIDEO SELECCIONADO:")
-    log(f"   Título: {video_seleccionado['titulo'][:60]}...")
-    log(f"   Fuente: {video_seleccionado['fuente']}")
-    log(f"   URL: {video_seleccionado['url'][:60]}...")
+    log(f"\n🎬 Seleccionado: {video_sel['titulo'][:60]}...")
     
-    # Generar hashtags
-    hashtags = generar_hashtags_video(video_seleccionado['titulo'], video_seleccionado.get('descripcion', ''))
+    # Preparar publicación
+    hashtags = generar_hashtags(video_sel['titulo'], video_sel.get('descripcion', ''))
     
-    # Intentar descargar y publicar video nativo
     video_path = None
     thumbnail_path = None
     exito = False
+    tipo_pub = 'link'
     
-    if video_seleccionado.get('tipo') == 'youtube' and video_seleccionado.get('video_id'):
-        video_id = video_seleccionado['video_id']
+    # Intentar descargar video nativo
+    if video_sel.get('tipo') in ['youtube', 'youtube_rss'] and video_sel.get('video_id'):
+        video_id = video_sel['video_id']
         
-        # Descargar thumbnail primero (fallback)
-        if video_seleccionado.get('thumbnail'):
-            thumbnail_path = obtener_thumbnail_video(video_seleccionado['thumbnail'], video_id)
+        # Thumbnail primero (fallback)
+        if video_sel.get('thumbnail'):
+            thumbnail_path = obtener_thumbnail_video(video_sel['thumbnail'], video_id)
         
-        # Intentar descargar video
-        video_path = descargar_video_youtube(video_seleccionado['url'], video_id)
-        
-        if video_path and os.path.exists(video_path):
-            # Publicar video nativo
-            exito = publicar_video_facebook(
-                video_seleccionado['titulo'],
-                video_seleccionado.get('descripcion', ''),
-                video_path,
-                hashtags,
-                {'video_id': video_id}
-            )
+        # Descargar video si yt-dlp disponible
+        if yt_dlp_ok:
+            video_path = descargar_video_youtube(video_sel['url'], video_id)
             
-            # Limpiar archivo temporal
-            try:
-                os.remove(video_path)
-                if os.path.exists(os.path.dirname(video_path)):
-                    os.rmdir(os.path.dirname(video_path))
-            except:
-                pass
+            if video_path:
+                exito = publicar_video_facebook(
+                    video_sel['titulo'],
+                    video_sel.get('descripcion', ''),
+                    video_path,
+                    hashtags
+                )
+                
+                # Limpiar
+                try:
+                    if os.path.exists(video_path):
+                        os.remove(video_path)
+                    dir_path = os.path.dirname(video_path)
+                    if os.path.exists(dir_path) and not os.listdir(dir_path):
+                        os.rmdir(dir_path)
+                except:
+                    pass
+                
+                if exito:
+                    tipo_pub = 'video'
     
-    # Si falló la publicación nativa, usar enlace con thumbnail
+    # Fallback a enlace
     if not exito:
-        log("   📎 Publicando como enlace de video...", 'info')
+        log("   📎 Publicando como enlace...", 'info')
         exito = publicar_enlace_video_facebook(
-            video_seleccionado['titulo'],
-            video_seleccionado.get('descripcion', ''),
-            video_seleccionado['url'],
+            video_sel['titulo'],
+            video_sel.get('descripcion', ''),
+            video_sel['url'],
             hashtags,
             thumbnail_path
         )
-        
-        tipo_pub = 'link'
-    else:
-        tipo_pub = 'video'
     
-    # Limpiar thumbnail si existe
+    # Limpiar thumbnail
     if thumbnail_path and os.path.exists(thumbnail_path):
         try:
             os.remove(thumbnail_path)
         except:
             pass
     
-    # Guardar estado
+    # Guardar
     if exito:
-        guardar_historial(
-            historial, 
-            video_seleccionado['url'], 
-            video_seleccionado['titulo'],
-            video_seleccionado.get('video_id'),
-            tipo_pub
-        )
+        guardar_historial(historial, video_sel['url'], video_sel['titulo'], 
+                         video_sel.get('video_id'), tipo_pub)
         
         estado = cargar_estado()
         estado['ultima_publicacion'] = datetime.now().isoformat()
         guardar_estado(estado)
         
         stats = cargar_historial().get('estadisticas', {})
-        log(f"✅ ÉXITO - Videos nativos: {stats.get('videos', 0)}, Enlaces: {stats.get('links', 0)}", 'exito')
+        log(f"✅ ÉXITO - Videos: {stats.get('videos', 0)}, Links: {stats.get('links', 0)}", 'exito')
         return True
     
     return False
-
-def generar_hashtags_video(titulo, descripcion):
-    """Genera hashtags específicos para videos de noticias"""
-    texto = f"{titulo} {descripcion}".lower()
-    hashtags = ['#NoticiasEnVideo', '#ÚltimaHora', '#VideoNoticias']
-    
-    temas = {
-        'guerra|conflicto|ataque|bombardeo': '#ConflictoArmado',
-        'ucrania|rusia|zelensky|putin': '#UcraniaRusia',
-        'gaza|israel|palestina|hamas|netanyahu': '#IsraelGaza',
-        'trump|biden': '#PolíticaGlobal',
-        'economía|mercados': '#EconomíaMundial',
-        'iran|yemen|arabia': '#OrienteMedio',
-        'china|taiwan': '#ChinaTaiwán',
-        'drone|dron|footage': '#WarFootage',
-        'protest|protesta': '#Protestas',
-    }
-    
-    for patron, tag in temas.items():
-        if re.search(patron, texto):
-            hashtags.append(tag)
-    
-    hashtags.append('#Mundo')
-    return ' '.join(hashtags)
 
 if __name__ == "__main__":
     try:
