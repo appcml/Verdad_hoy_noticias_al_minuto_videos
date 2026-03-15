@@ -1,37 +1,35 @@
-name: Bot de Noticias Video
+name: Bot Noticias Video
 
 on:
   schedule:
     - cron: '0 */1 * * *'  # Cada hora
-  workflow_dispatch:  # Manual también
+  workflow_dispatch:
 
 jobs:
-  ejecutar-bot:
+  bot:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout código
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
       
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
-      - name: Instalar dependencias
+      - name: Instalar dependencias Python
         run: |
-          pip install feedparser requests beautifulsoup4 yt-dlp isodare lxml pillow
+          pip install requests feedparser beautifulsoup4 lxml isodate pillow
       
-      - name: Instalar ffmpeg
+      - name: Instalar yt-dlp y ffmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+          pip install yt-dlp
       
-      - name: Ejecutar bot
+      - name: Ejecutar Bot
         env:
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-          # ... otras variables
         run: python bot.py
