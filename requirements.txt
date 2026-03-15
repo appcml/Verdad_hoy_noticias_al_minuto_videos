@@ -1,4 +1,12 @@
-yt-dlp>=2023.12.30
-requests>=2.31.0
-python-dotenv>=1.0.0
-facebook-sdk>=3.1.0
+# Obligatorios
+requests>=2.28.0
+
+# Opcionales pero recomendados
+feedparser>=6.0.0
+beautifulsoup4>=4.11.0
+lxml>=4.9.0
+isodate>=0.6.0
+pillow>=9.0.0
+
+# Para descarga de videos (instalar aparte con pip o apt)
+# yt-dlp>=2023.0.0
