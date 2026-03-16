@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Bot de Noticias VIDEO para Facebook - V2.2 NATIVO
-- Descarga videos y publica nativamente
-- Las visualizaciones suman para tu página
+Bot de Noticias VIDEO para Facebook - V2.3 CON COOKIES
+- Descarga videos usando cookies de YouTube
+- Fallback a enlace si falla la descarga
 """
 
 import os
@@ -14,6 +14,7 @@ import json
 import tempfile
 import subprocess
 import shutil
+import base64
 from datetime import datetime, timedelta
 
 try:
@@ -30,11 +31,12 @@ NEWS_API_KEY = os.getenv('NEWS_API_KEY')
 FB_PAGE_ID = os.getenv('FB_PAGE_ID')
 FB_ACCESS_TOKEN = os.getenv('FB_ACCESS_TOKEN')
 YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
+YT_COOKIES_B64 = os.getenv('YT_COOKIES')  # Cookies en base64
 
 HISTORIAL_PATH = os.getenv('HISTORIAL_PATH', 'data/historial_publicaciones.json')
 ESTADO_PATH = os.getenv('ESTADO_PATH', 'data/estado_bot.json')
 
-TIEMPO_ENTRE_PUBLICACIONES = 60  # minutos
+TIEMPO_ENTRE_PUBLICACIONES = 60
 VENTANA_DUPLICADOS_HORAS = 72
 UMBRAL_SIMILITUD_TITULO = 0.85
 
@@ -46,6 +48,37 @@ def log(mensaje, tipo='info'):
     iconos = {'info': 'ℹ️', 'exito': '✅', 'error': '❌', 'advertencia': '⚠️', 'debug': '🔍'}
     timestamp = datetime.now().strftime('%H:%M:%S')
     print(f"[{timestamp}] {iconos.get(tipo, 'ℹ️')} {mensaje}")
+
+# =============================================================================
+# COOKIES
+# =============================================================================
+
+def preparar_cookies():
+    """
+    Decodifica las cookies desde base64 y las guarda en archivo temporal
+    Retorna: ruta al archivo cookies.txt o None
+    """
+    if not YT_COOKIES_B64:
+        log("No hay cookies configuradas (YT_COOKIES)", 'advertencia')
+        return None
+    
+    try:
+        # Decodificar base64
+        cookies_content = base64.b64decode(YT_COOKIES_B64).decode('utf-8')
+        
+        # Guardar en archivo temporal
+        temp_dir = tempfile.gettempdir()
+        cookies_path = os.path.join(temp_dir, 'youtube_cookies.txt')
+        
+        with open(cookies_path, 'w', encoding='utf-8') as f:
+            f.write(cookies_content)
+        
+        log(f"✅ Cookies preparadas: {cookies_path}", 'debug')
+        return cookies_path
+        
+    except Exception as e:
+        log(f"❌ Error decodificando cookies: {e}", 'error')
+        return None
 
 # =============================================================================
 # FUNCIONES AUXILIARES
@@ -80,14 +113,6 @@ def generar_hash(texto):
     texto_normalizado = re.sub(r'\s+', ' ', texto_normalizado)
     return hashlib.md5(texto_normalizado.encode()).hexdigest()
 
-def normalizar_url(url):
-    if not url:
-        return ""
-    url = re.sub(r'\?.*$', '', url)
-    url = re.sub(r'#.*$', '', url)
-    url = re.sub(r'https?://(www\.)?', '', url)
-    return url.lower().rstrip('/')
-
 def limpiar_texto(texto):
     if not texto:
         return ""
@@ -99,33 +124,31 @@ def limpiar_texto(texto):
     return texto.strip()
 
 # =============================================================================
-# DESCARGA DE VIDEOS
+# DESCARGA DE VIDEOS CON COOKIES
 # =============================================================================
 
 def verificar_yt_dlp():
-    """Verifica si yt-dlp está instalado y disponible"""
+    """Verifica si yt-dlp está instalado"""
     try:
         result = subprocess.run(['yt-dlp', '--version'], 
                               capture_output=True, text=True, timeout=10)
         version = result.stdout.strip()
         log(f"yt-dlp versión: {version}", 'info')
-        return result.returncode == 0
+        return True
     except Exception as e:
         log(f"yt-dlp no disponible: {e}", 'error')
         return False
 
-def descargar_video_youtube(video_url, video_id, max_altura=720):
+def descargar_video_youtube(video_url, video_id, cookies_path=None, max_altura=720):
     """
-    Descarga video de YouTube a carpeta temporal
-    Retorna: ruta del archivo descargado o None
+    Descarga video de YouTube usando cookies para evitar bloqueo de bot
     """
-    # Crear directorio temporal específico
     temp_dir = tempfile.mkdtemp(prefix='fb_video_')
     output_template = os.path.join(temp_dir, f"{video_id}.%(ext)s")
     
     log(f"📁 Directorio temporal: {temp_dir}", 'debug')
     
-    # Comando optimizado para Facebook
+    # Comando base
     cmd = [
         'yt-dlp',
         '--format', f'best[height<={max_altura}][ext=mp4]/best[height<={max_altura}]/best[ext=mp4]/best',
@@ -137,11 +160,19 @@ def descargar_video_youtube(video_url, video_id, max_altura=720):
         '--retries', '5',
         '--fragment-retries', '5',
         '--skip-unavailable-fragments',
-        '--quiet',  # Menos verbose
+        '--quiet',
         '--no-warnings',
-        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        video_url
+        '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     ]
+    
+    # Agregar cookies si están disponibles
+    if cookies_path and os.path.exists(cookies_path):
+        cmd.extend(['--cookies', cookies_path])
+        log("🔐 Usando cookies de autenticación", 'info')
+    else:
+        log("⚠️ Sin cookies - puede fallar por detección de bot", 'advertencia')
+    
+    cmd.append(video_url)
     
     try:
         log(f"⬇️ Descargando video: {video_id}", 'info')
@@ -150,19 +181,29 @@ def descargar_video_youtube(video_url, video_id, max_altura=720):
             cmd, 
             capture_output=True, 
             text=True, 
-            timeout=180  # 3 minutos máximo
+            timeout=180
         )
         
+        # Verificar si fue exitoso
         if result.returncode != 0:
-            log(f"❌ Error yt-dlp: {result.stderr}", 'error')
-            # Limpiar temporal
+            error_msg = result.stderr
+            
+            # Detectar tipo de error
+            if "bot" in error_msg.lower() or "sign in" in error_msg.lower():
+                log("🤖 YouTube detectó bot (necesitas cookies válidas)", 'error')
+            elif "unavailable" in error_msg.lower():
+                log("📛 Video no disponible o restringido", 'error')
+            else:
+                log(f"❌ Error yt-dlp: {error_msg[:300]}", 'error')
+            
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
         
-        # Buscar el archivo descargado
-        archivos = os.listdir(temp_dir)
+        # Buscar archivo descargado
+        archivos = [f for f in os.listdir(temp_dir) if f.endswith(('.mp4', '.mkv', '.webm'))]
+        
         if not archivos:
-            log("❌ No se encontró archivo descargado", 'error')
+            log("❌ No se encontró archivo de video", 'error')
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
         
@@ -171,93 +212,134 @@ def descargar_video_youtube(video_url, video_id, max_altura=720):
         
         log(f"✅ Descargado: {archivos[0]} ({size_mb:.1f} MB)", 'exito')
         
-        # Verificar que sea un video válido
-        if size_mb < 0.5:  # Menos de 500KB es sospechoso
+        # Verificar tamaño mínimo
+        if size_mb < 0.5:
             log("⚠️ Archivo muy pequeño, posible error", 'advertencia')
             shutil.rmtree(temp_dir, ignore_errors=True)
             return None
-            
+        
         return video_path
         
     except subprocess.TimeoutExpired:
-        log("⏱️ Timeout en descarga", 'error')
+        log("⏱️ Timeout en descarga (3 minutos)", 'error')
         shutil.rmtree(temp_dir, ignore_errors=True)
         return None
     except Exception as e:
-        log(f"❌ Error descarga: {e}", 'error')
+        log(f"❌ Error inesperado: {e}", 'error')
         shutil.rmtree(temp_dir, ignore_errors=True)
         return None
 
 # =============================================================================
-# PUBLICACIÓN NATIVA EN FACEBOOK
+# PUBLICACIÓN FACEBOOK
 # =============================================================================
 
-def publicar_video_nativo_facebook(titulo, descripcion, video_path, hashtags):
-    """
-    Publica video como archivo nativo en Facebook
-    Las visualizaciones suman para tu página
-    """
+def publicar_video_nativo(titulo, descripcion, video_path, hashtags):
+    """Publica video nativo en Facebook"""
     if not FB_PAGE_ID or not FB_ACCESS_TOKEN:
         log("❌ Faltan credenciales Facebook", 'error')
         return False
     
-    # Preparar mensaje
     mensaje = f"📰 {titulo}\n\n{descripcion}\n\n{hashtags}\n\n— 🌐 Verdad Hoy"
     
-    # Truncar si es muy largo
     if len(mensaje) > 2200:
         mensaje = mensaje[:2100] + "...\n\n" + hashtags
     
     file_size = os.path.getsize(video_path)
     size_mb = file_size / (1024 * 1024)
     
-    log(f"📤 Subiendo a Facebook ({size_mb:.1f} MB)...", 'info')
+    log(f"📤 Subiendo video nativo ({size_mb:.1f} MB)...", 'info')
     
-    # Endpoint de videos nativos
     url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/videos"
     
     try:
         with open(video_path, 'rb') as video_file:
-            files = {
-                'file': ('video.mp4', video_file, 'video/mp4')
-            }
+            files = {'file': ('video.mp4', video_file, 'video/mp4')}
             data = {
                 'description': mensaje,
                 'access_token': FB_ACCESS_TOKEN,
-                'published': 'true',
-                'title': titulo[:255]  # Título opcional
+                'published': 'true'
             }
             
-            # Timeout largo para videos grandes
-            response = requests.post(
-                url, 
-                files=files, 
-                data=data, 
-                timeout=600  # 10 minutos
-            )
-            
+            response = requests.post(url, files=files, data=data, timeout=600)
             result = response.json()
             
             if response.status_code == 200 and 'id' in result:
-                video_fb_id = result['id']
-                log(f"✅ Video publicado nativamente: {video_fb_id}", 'exito')
-                log(f"🎥 El video se reproduce en tu página (suma visualizaciones)", 'exito')
+                log(f"✅ Video nativo publicado: {result['id']}", 'exito')
+                log("🎥 Las visualizaciones suman para tu página", 'exito')
                 return True
             else:
-                error_msg = result.get('error', {}).get('message', 'Error desconocido')
-                error_code = result.get('error', {}).get('code', 'N/A')
-                log(f"❌ Error Facebook ({error_code}): {error_msg}", 'error')
+                error = result.get('error', {})
+                log(f"❌ Error Facebook: {error.get('message', 'Desconocido')}", 'error')
                 return False
                 
-    except requests.exceptions.Timeout:
-        log("⏱️ Timeout subiendo a Facebook", 'error')
-        return False
     except Exception as e:
-        log(f"❌ Error publicando: {e}", 'error')
+        log(f"❌ Error subiendo: {e}", 'error')
+        return False
+
+def publicar_enlace_con_thumbnail(titulo, descripcion, url_video, thumbnail_url, hashtags):
+    """
+    Fallback: Publica enlace con thumbnail para mejor visualización
+    """
+    log("📎 Publicando como enlace con thumbnail...", 'info')
+    
+    mensaje = f"📰 {titulo}\n\n{descripcion}\n\n🔗 Ver video: {url_video}\n\n{hashtags}\n\n— 🌐 Verdad Hoy"
+    
+    try:
+        # Descargar thumbnail
+        thumb_path = None
+        if thumbnail_url:
+            try:
+                resp = requests.get(thumbnail_url, timeout=10)
+                if resp.status_code == 200:
+                    temp_dir = tempfile.mkdtemp()
+                    thumb_path = os.path.join(temp_dir, "thumb.jpg")
+                    with open(thumb_path, 'wb') as f:
+                        f.write(resp.content)
+            except Exception as e:
+                log(f"No se pudo descargar thumbnail: {e}", 'debug')
+        
+        # Publicar
+        if thumb_path and os.path.exists(thumb_path):
+            # Como foto con link (mejor visual)
+            url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/photos"
+            with open(thumb_path, 'rb') as f:
+                files = {'file': ('thumbnail.jpg', f, 'image/jpeg')}
+                data = {
+                    'message': mensaje,
+                    'access_token': FB_ACCESS_TOKEN
+                }
+                resp = requests.post(url, files=files, data=data, timeout=60)
+        else:
+            # Solo enlace
+            url = f"https://graph.facebook.com/v18.0/{FB_PAGE_ID}/feed"
+            data = {
+                'message': mensaje,
+                'link': url_video,
+                'access_token': FB_ACCESS_TOKEN
+            }
+            resp = requests.post(url, data=data, timeout=60)
+        
+        # Limpiar thumbnail
+        if thumb_path:
+            try:
+                os.remove(thumb_path)
+                os.rmdir(os.path.dirname(thumb_path))
+            except:
+                pass
+        
+        if resp.status_code == 200:
+            log("✅ Enlace publicado (fallback)", 'exito')
+            return True
+        else:
+            log(f"❌ Error: {resp.json().get('error', {}).get('message', 'Unknown')}", 'error')
+            return False
+            
+    except Exception as e:
+        log(f"❌ Error en fallback: {e}", 'error')
         return False
 
 # =============================================================================
-# BÚSQUEDA DE VIDEOS (Simplificada)
+# BÚSQUEDA DE VIDEOS
 # =============================================================================
 
 def buscar_videos_youtube():
@@ -280,7 +362,7 @@ def buscar_videos_youtube():
                 'part': 'snippet',
                 'q': query,
                 'type': 'video',
-                'videoDuration': 'short',  # Videos cortos (< 4 min)
+                'videoDuration': 'short',
                 'order': 'date',
                 'maxResults': 10,
                 'key': YOUTUBE_API_KEY,
@@ -313,7 +395,7 @@ def buscar_videos_youtube():
     return videos
 
 # =============================================================================
-# HISTORIAL (Simplificado)
+# HISTORIAL
 # =============================================================================
 
 def cargar_historial():
@@ -321,31 +403,30 @@ def cargar_historial():
         'video_ids': [], 
         'hashes': [], 
         'timestamps': [],
-        'estadisticas': {'total': 0}
+        'estadisticas': {'total': 0, 'nativos': 0, 'links': 0}
     }
     return cargar_json(HISTORIAL_PATH, default)
 
 def noticia_ya_publicada(historial, video_id, titulo):
-    """Verifica si ya se publicó"""
+    """Verifica duplicados"""
     if video_id in historial.get('video_ids', []):
         return True
-    
     hash_tit = generar_hash(titulo)
     if hash_tit in historial.get('hashes', []):
         return True
-    
     return False
 
-def guardar_historial(historial, video_id, titulo):
+def guardar_historial(historial, video_id, titulo, tipo='nativo'):
     historial['video_ids'].append(video_id)
     historial['hashes'].append(generar_hash(titulo))
     historial['timestamps'].append(datetime.now().isoformat())
     
-    stats = historial.get('estadisticas', {'total': 0})
+    stats = historial.get('estadisticas', {'total': 0, 'nativos': 0, 'links': 0})
     stats['total'] += 1
+    stats[tipo] = stats.get(tipo, 0) + 1
     historial['estadisticas'] = stats
     
-    # Mantener solo últimos 500
+    # Limitar tamaño
     for key in ['video_ids', 'hashes', 'timestamps']:
         if len(historial[key]) > 500:
             historial[key] = historial[key][-500:]
@@ -377,7 +458,7 @@ def generar_hashtags(titulo, descripcion):
 
 def main():
     print("\n" + "="*60)
-    print("🎥 BOT DE NOTICIAS VIDEO NATIVO - V2.2")
+    print("🎥 BOT DE NOTICIAS VIDEO NATIVO - V2.3")
     print(f"⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("="*60)
     
@@ -386,26 +467,29 @@ def main():
         log("ERROR: Faltan credenciales", 'error')
         return False
     
-    # PASO 1: Verificar yt-dlp (CRÍTICO)
+    # Verificar yt-dlp
     if not verificar_yt_dlp():
-        log("❌ CRÍTICO: yt-dlp no está instalado", 'error')
-        log("ℹ️ El bot no puede descargar videos sin yt-dlp", 'info')
+        log("ERROR: yt-dlp no está instalado", 'error')
         return False
     
-    # PASO 2: Cargar historial
-    historial = cargar_historial()
-    log(f"📊 Historial: {historial['estadisticas'].get('total', 0)} videos publicados", 'info')
+    # PREPARAR COOKIES (NUEVO)
+    cookies_path = preparar_cookies()
     
-    # PASO 3: Buscar videos
+    # Cargar historial
+    historial = cargar_historial()
+    stats = historial.get('estadisticas', {})
+    log(f"📊 Historial: {stats.get('total', 0)} total "
+        f"({stats.get('nativos', 0)} nativos, {stats.get('links', 0)} links)", 'info')
+    
+    # Buscar videos
     videos = buscar_videos_youtube()
     
     if not videos:
         log("No se encontraron videos", 'error')
         return False
     
-    # PASO 4: Seleccionar video nuevo
+    # Seleccionar video nuevo
     video_sel = None
-    
     for video in videos:
         vid_id = video.get('video_id')
         titulo = video.get('titulo', '')
@@ -419,42 +503,62 @@ def main():
         break
     
     if not video_sel:
-        log("No hay videos nuevos para publicar", 'advertencia')
+        log("No hay videos nuevos", 'advertencia')
         return False
     
-    # PASO 5: Descargar video
+    # Generar hashtags
+    hashtags = generar_hashtags(video_sel['titulo'], video_sel.get('descripcion', ''))
+    
+    # INTENTAR DESCARGA NATIVA
     video_path = descargar_video_youtube(
         video_sel['url'], 
         video_sel['video_id'],
-        max_altura=720
+        cookies_path=cookies_path
     )
     
-    if not video_path:
-        log("No se pudo descargar el video", 'error')
-        return False
+    exito = False
+    tipo_pub = 'link'
     
-    # PASO 6: Publicar nativamente
-    hashtags = generar_hashtags(video_sel['titulo'], video_sel.get('descripcion', ''))
+    if video_path:
+        # ÉXITO: Publicar nativo
+        exito = publicar_video_nativo(
+            video_sel['titulo'],
+            video_sel.get('descripcion', ''),
+            video_path,
+            hashtags
+        )
+        if exito:
+            tipo_pub = 'nativo'
+        
+        # Limpiar video temporal
+        try:
+            temp_dir = os.path.dirname(video_path)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            log("🗑️ Temporales limpiados", 'debug')
+        except:
+            pass
+    else:
+        # FALLBACK: Publicar como enlace
+        log("Fallback a publicación de enlace...", 'advertencia')
+        exito = publicar_enlace_con_thumbnail(
+            video_sel['titulo'],
+            video_sel.get('descripcion', ''),
+            video_sel['url'],
+            video_sel.get('thumbnail', ''),
+            hashtags
+        )
     
-    exito = publicar_video_nativo_facebook(
-        video_sel['titulo'],
-        video_sel.get('descripcion', ''),
-        video_path,
-        hashtags
-    )
+    # Limpiar cookies temporales
+    if cookies_path and os.path.exists(cookies_path):
+        try:
+            os.remove(cookies_path)
+        except:
+            pass
     
-    # PASO 7: Limpieza (SIEMPRE ejecutar)
-    try:
-        temp_dir = os.path.dirname(video_path)
-        shutil.rmtree(temp_dir, ignore_errors=True)
-        log("🗑️ Archivos temporales eliminados", 'debug')
-    except Exception as e:
-        log(f"Error limpiando temporales: {e}", 'advertencia')
-    
-    # PASO 8: Guardar historial si fue exitoso
+    # Guardar historial
     if exito:
-        guardar_historial(historial, video_sel['video_id'], video_sel['titulo'])
-        log(f"✅ ÉXITO: Video publicado nativamente en tu página", 'exito')
+        guardar_historial(historial, video_sel['video_id'], video_sel['titulo'], tipo_pub)
+        log(f"✅ ÉXITO ({tipo_pub.upper()}): {video_sel['titulo'][:50]}...", 'exito')
         return True
     else:
         log("❌ Falló la publicación", 'error')
