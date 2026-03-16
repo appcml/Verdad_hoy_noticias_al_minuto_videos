@@ -1,35 +1,59 @@
-name: Bot Noticias Video
+name: Bot Noticias Video Nativo
 
 on:
   schedule:
-    - cron: '0 */1 * * *'  # Cada hora
-  workflow_dispatch:
+    # Ejecutar cada hora
+    - cron: '0 * * * *'
+  workflow_dispatch:  # Permitir ejecución manual
 
 jobs:
-  bot:
+  publicar-video:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v4
+    - name: Checkout código
+      uses: actions/checkout@v4
       
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Instalar dependencias CRÍTICAS
+      run: |
+        pip install --upgrade pip
+        pip install requests
+        # INSTALAR yt-dlp y ffmpeg (ESENCIAL)
+        pip install yt-dlp
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg
+        
+    - name: Verificar instalación
+      run: |
+        echo "=== Verificando yt-dlp ==="
+        yt-dlp --version
+        which yt-dlp
+        echo "=== Verificando ffmpeg ==="
+        ffmpeg -version | head -1
+        
+    - name: Crear directorio de datos
+      run: mkdir -p data
       
-      - name: Instalar dependencias Python
-        run: |
-          pip install requests feedparser beautifulsoup4 lxml isodate pillow
-      
-      - name: Instalar yt-dlp y ffmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          pip install yt-dlp
-      
-      - name: Ejecutar Bot
-        env:
-          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
-          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-        run: python bot.py
+    - name: Ejecutar Bot
+      env:
+        FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+        FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+        HISTORIAL_PATH: data/historial_publicaciones.json
+        ESTADO_PATH: data/estado_bot.json
+      run: |
+        python bot.py
+        
+    - name: Guardar historial (opcional)
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: historial-bot
+        path: data/
+        retention-days: 30
