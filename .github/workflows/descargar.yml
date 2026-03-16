@@ -1,0 +1,40 @@
+name: Descargar Videos
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # Cada 6 horas
+  workflow_dispatch:
+
+jobs:
+  descargar:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Instalar dependencias
+      run: |
+        pip install requests yt-dlp
+        sudo apt-get update && sudo apt-get install -y ffmpeg
+        
+    - name: Crear carpetas
+      run: mkdir -p videos_pendientes videos_publicados
+      
+    - name: Descargar videos
+      env:
+        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+        YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        MAX_VIDEOS: 3  # Descargar máximo 3 por ejecución
+        MAX_TAMANO_MB: 80
+      run: python bot_descargar.py
+      
+    - name: Guardar videos como artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: videos-pendientes
+        path: videos_pendientes/
+        retention-days: 7
