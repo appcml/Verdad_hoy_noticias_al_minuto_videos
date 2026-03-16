@@ -1,0 +1,45 @@
+name: Publicar Video
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Cada hora
+  workflow_dispatch:
+
+jobs:
+  publicar:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        
+    - name: Instalar dependencias
+      run: pip install requests
+      
+    - name: Crear carpetas
+      run: mkdir -p videos_pendientes videos_publicados
+      
+    - name: Descargar videos pendientes (artifact anterior)
+      uses: actions/download-artifact@v4
+      with:
+        name: videos-pendientes
+        path: videos_pendientes/
+      continue-on-error: true  # Si no hay artifact, continuar
+      
+    - name: Publicar video
+      env:
+        FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+        FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+      run: python bot_publicar.py
+      
+    - name: Guardar estado actualizado
+      uses: actions/upload-artifact@v4
+      with:
+        name: videos-estado
+        path: |
+          videos_pendientes/
+          videos_publicados/
+        retention-days: 30
