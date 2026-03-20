@@ -2,7 +2,7 @@ name: Bot Noticias Video
 
 on:
   schedule:
-    - cron: '0 */1 * * *'  # Cada hora
+    - cron: '0 */1 * * *'
   workflow_dispatch:
 
 jobs:
@@ -10,9 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout código
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Asegurar que se descarga todo
       
-      - uses: actions/setup-python@v5
+      - name: Verificar archivos descargados
+        run: |
+          echo "=== CONTENIDO DEL REPOSITORIO ==="
+          ls -la
+          echo "=== BUSCANDO bot.py ==="
+          find . -name "bot.py" -type f 2>/dev/null || echo "No encontrado"
+          echo "=== DIRECTORIO ACTUAL ==="
+          pwd
+      
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -31,4 +44,11 @@ jobs:
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-        run: python bot.py
+        run: |
+          # Verificar que bot.py existe antes de ejecutar
+          if [ -f "bot.py" ]; then
+            python bot.py
+          else
+            echo "❌ ERROR: bot.py no encontrado"
+            exit 1
+          fi
