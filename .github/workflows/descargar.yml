@@ -10,22 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout código
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Asegurar que se descarga todo
+      - uses: actions/checkout@v4
       
-      - name: Verificar archivos descargados
-        run: |
-          echo "=== CONTENIDO DEL REPOSITORIO ==="
-          ls -la
-          echo "=== BUSCANDO bot.py ==="
-          find . -name "bot.py" -type f 2>/dev/null || echo "No encontrado"
-          echo "=== DIRECTORIO ACTUAL ==="
-          pwd
-      
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       
@@ -38,17 +25,17 @@ jobs:
           sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod a+rx /usr/local/bin/yt-dlp
       
+      - name: Verificar archivos
+        run: |
+          echo "=== Archivos en el directorio ==="
+          ls -la
+          echo "=== Verificando bot.py ==="
+          test -f bot.py && echo "✅ bot.py existe" || echo "❌ bot.py NO existe"
+      
       - name: Ejecutar Bot
         env:
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-        run: |
-          # Verificar que bot.py existe antes de ejecutar
-          if [ -f "bot.py" ]; then
-            python bot.py
-          else
-            echo "❌ ERROR: bot.py no encontrado"
-            exit 1
-          fi
+        run: python bot.py
