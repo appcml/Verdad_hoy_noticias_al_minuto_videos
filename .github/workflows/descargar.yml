@@ -2,7 +2,7 @@ name: Bot Noticias Video
 
 on:
   schedule:
-    - cron: '0 */1 * * *'
+    - cron: '0 */2 * * *'  # Cada 2 horas
   workflow_dispatch:
 
 jobs:
@@ -17,25 +17,22 @@ jobs:
           python-version: '3.11'
       
       - name: Instalar dependencias
-        run: |
-          pip install requests feedparser pytube
-      
-      - name: Instalar yt-dlp
-        run: |
-          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod a+rx /usr/local/bin/yt-dlp
-      
-      - name: Verificar archivos
-        run: |
-          echo "=== Archivos en el directorio ==="
-          ls -la
-          echo "=== Verificando bot.py ==="
-          test -f bot.py && echo "✅ bot.py existe" || echo "❌ bot.py NO existe"
+        run: pip install requests
       
       - name: Ejecutar Bot
         env:
-          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
-          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}  # Opcional
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}      # Opcional
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }} # Opcional
         run: python bot.py
+      
+      - name: Guardar videos encontrados
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: videos-encontrados
+          path: |
+            videos_encontrados.json
+            videos_para_revisar.md
+          retention-days: 7
