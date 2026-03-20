@@ -1,40 +1,34 @@
-name: Descargar Videos
+name: Bot Noticias Video
 
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Cada 6 horas
+    - cron: '0 */1 * * *'  # Cada hora
   workflow_dispatch:
 
 jobs:
-  descargar:
+  bot:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
-    
-    - uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
-        
-    - name: Instalar dependencias
-      run: |
-        pip install requests yt-dlp
-        sudo apt-get update && sudo apt-get install -y ffmpeg
-        
-    - name: Crear carpetas
-      run: mkdir -p videos_pendientes videos_publicados
+      - uses: actions/checkout@v4
       
-    - name: Descargar videos
-      env:
-        YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
-        YT_COOKIES: ${{ secrets.YT_COOKIES }}
-        MAX_VIDEOS: 3  # Descargar máximo 3 por ejecución
-        MAX_TAMANO_MB: 80
-      run: python bot_descargar.py
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       
-    - name: Guardar videos como artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: videos-pendientes
-        path: videos_pendientes/
-        retention-days: 7
+      - name: Instalar dependencias
+        run: |
+          pip install requests feedparser pytube
+      
+      - name: Instalar yt-dlp
+        run: |
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+      
+      - name: Ejecutar Bot
+        env:
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+        run: python bot.py
