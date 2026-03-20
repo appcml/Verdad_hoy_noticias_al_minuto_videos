@@ -1,12 +1,16 @@
+# requirements.txt actualizado
+
 # Obligatorios
 requests>=2.28.0
 
-# Opcionales pero recomendados
+# Opcionales pero recomendadas
 feedparser>=6.0.0
 beautifulsoup4>=4.11.0
 lxml>=4.9.0
 isodate>=0.6.0
 pillow>=9.0.0
 
-# Para descarga de videos (instalar aparte con pip o apt)
-# yt-dlp>=2023.0.0
+# Descarga de videos (instalar las que puedas)
+yt-dlp>=2023.0.0      # Mejor opción, siempre intenta instalar esta
+youtube_dl>=2021.0.0  # Alternativa si yt-dlp falla
+pytube>=15.0.0        # Para videos sin restricción (sin firma cifrada)
